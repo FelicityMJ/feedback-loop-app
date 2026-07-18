@@ -176,7 +176,7 @@ export async function signInWithGoogle() {
 export async function resetPassword(email) {
   if (isDemoMode) return;
   await firebaseReady;
-  await sendPasswordResetEmail(auth, email, { url: appSettings.publicAppUrl });
+  await sendPasswordResetEmail(auth, email);
 }
 
 export async function signOut() {
@@ -303,7 +303,15 @@ export async function registerWithInvite({ displayName, email, password, inviteC
     }
     throw error;
   }
-  await sendEmailVerification(result.user, { url: appSettings.publicAppUrl });
+  // Account creation and the Firestore school profile are already complete at
+  // this point. Use Firebase's default verification handler so a missing
+  // continue-URL allowlist entry cannot leave the app on a misleading
+  // "Account needs a school profile" screen.
+  try {
+    await sendEmailVerification(result.user);
+  } catch (error) {
+    console.warn("Account created, but the verification email could not be sent.", error);
+  }
   return result.user;
 }
 

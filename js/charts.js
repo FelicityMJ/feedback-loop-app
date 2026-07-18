@@ -1,6 +1,40 @@
+const GRADE_VALUES = {
+  "A1": 9,
+  "A2": 8,
+  "B3": 7,
+  "B4": 6,
+  "C5": 5,
+  "C6": 4,
+  "D7": 3,
+  "D8": 2,
+  "NO AWARD": 1,
+  "N/A": 1,
+  // Legacy values are retained so older records still render sensibly.
+  "A": 8,
+  "B": 6,
+  "C": 4,
+  "D": 2
+};
+
+const GRADE_LABELS = ["A1", "A2", "B3", "B4", "C5", "C6", "D7", "D8", "No Award"];
+
 const gradeValue = (grade) => {
   const key = String(grade || "").trim().toUpperCase();
-  return ({ "A": 5, "B": 4, "C": 3, "D": 2, "NO AWARD": 1, "N/A": 1 })[key] || 0;
+  return GRADE_VALUES[key] || 0;
+};
+
+const gradeFromPercentage = (percentage) => {
+  const value = Number(percentage);
+  if (!Number.isFinite(value)) return "No Award";
+  if (value >= 85) return "A1";
+  if (value >= 70) return "A2";
+  if (value >= 65) return "B3";
+  if (value >= 60) return "B4";
+  if (value >= 55) return "C5";
+  if (value >= 50) return "C6";
+  if (value >= 45) return "D7";
+  if (value >= 40) return "D8";
+  return "No Award";
 };
 
 const escapeXml = (value) => String(value ?? "")
@@ -11,32 +45,31 @@ const escapeXml = (value) => String(value ?? "")
 
 export function gradeChartSvg(assessments, targetGrade) {
   const sorted = [...assessments]
-    .filter((a) => a.grade)
+    .filter((a) => a.grade && a.verificationStatus !== "pending" && a.verificationStatus !== "returned")
     .sort((a, b) => new Date(a.date) - new Date(b.date));
   if (!sorted.length) {
-    return `<div class="empty">No assessment grades have been recorded for this subject yet.</div>`;
+    return `<div class="empty">No confirmed assessment grades have been recorded for this subject yet.</div>`;
   }
 
-  const width = 720;
-  const height = 290;
-  const left = 54;
-  const right = 22;
+  const width = 760;
+  const height = 390;
+  const left = 70;
+  const right = 24;
   const top = 24;
-  const bottom = 54;
+  const bottom = 58;
   const innerW = width - left - right;
   const innerH = height - top - bottom;
   const x = (index) => left + (sorted.length === 1 ? innerW / 2 : index * innerW / (sorted.length - 1));
-  const y = (value) => top + (5 - value) * innerH / 4;
-  const grades = ["A", "B", "C", "D", "No Award"];
+  const y = (value) => top + (9 - value) * innerH / 8;
   const points = sorted.map((a, i) => `${x(i)},${y(gradeValue(a.grade))}`).join(" ");
   const targetValue = gradeValue(targetGrade);
   const targetY = targetValue ? y(targetValue) : null;
 
-  const grid = grades.map((g, index) => {
-    const value = 5 - index;
+  const grid = GRADE_LABELS.map((grade, index) => {
+    const value = 9 - index;
     return `
       <line x1="${left}" y1="${y(value)}" x2="${width-right}" y2="${y(value)}" stroke="#e6eaf3" stroke-width="1"/>
-      <text x="${left-12}" y="${y(value)+4}" text-anchor="end" class="chart-title">${g}</text>`;
+      <text x="${left-14}" y="${y(value)+4}" text-anchor="end" class="chart-title">${grade}</text>`;
   }).join("");
 
   const labels = sorted.map((a, i) => {
@@ -73,4 +106,4 @@ export function miniBarSvg(items, valueKey, labelKey) {
   }).join("");
 }
 
-export { gradeValue };
+export { gradeValue, gradeFromPercentage, GRADE_LABELS };

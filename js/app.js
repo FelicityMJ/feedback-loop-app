@@ -1067,6 +1067,37 @@ async function withBusy(button, task) {
   finally { if (button) { button.disabled = false; button.textContent = old; } }
 }
 
+// Keep the pupil's text selection active when a toolbar button is pressed.
+// Without this, the button receives focus before the click handler runs and
+// the browser collapses the selection, so bold/highlight appears to do nothing.
+app.addEventListener("pointerdown", (event) => {
+  const formatButton = event.target.closest("[data-editor-command]");
+  if (!formatButton) return;
+  const shell = formatButton.closest(".rich-editor-shell");
+  const editor = shell?.querySelector("[contenteditable]");
+  if (!editor) return;
+
+  const selection = window.getSelection();
+  if (selection?.rangeCount) {
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) {
+      editor.__feedbackLoopSelection = range.cloneRange();
+    }
+  }
+  event.preventDefault();
+});
+
+document.addEventListener("selectionchange", () => {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  const node = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+    ? range.commonAncestorContainer
+    : range.commonAncestorContainer.parentElement;
+  const editor = node?.closest?.(".rich-editor[contenteditable]");
+  if (editor) editor.__feedbackLoopSelection = range.cloneRange();
+});
+
 app.addEventListener("click", async (event) => {
   const authTab = event.target.closest("[data-auth-tab]");
   if (authTab) { state.authTab = authTab.dataset.authTab; renderAuth(); return; }
@@ -1081,7 +1112,13 @@ app.addEventListener("click", async (event) => {
     const shell = formatButton.closest(".rich-editor-shell");
     const editor = shell?.querySelector("[contenteditable]");
     if (!editor) return;
-    editor.focus();
+    editor.focus({ preventScroll: true });
+    const selection = window.getSelection();
+    const savedRange = editor.__feedbackLoopSelection;
+    if (selection && savedRange) {
+      selection.removeAllRanges();
+      selection.addRange(savedRange);
+    }
     const command = formatButton.dataset.editorCommand;
     if (command === "highlight") {
       const colour = formatButton.dataset.colour;
@@ -1090,6 +1127,8 @@ app.addEventListener("click", async (event) => {
     } else {
       document.execCommand(command, false);
     }
+    if (selection?.rangeCount) editor.__feedbackLoopSelection = selection.getRangeAt(0).cloneRange();
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "formatSetBlockTextDirection" }));
     const form = formatButton.closest("form[data-feedback-editor]");
     if (form) scheduleFeedbackAutosave(form);
     return;

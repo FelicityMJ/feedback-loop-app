@@ -1,0 +1,28 @@
+FeedbackLoop Proprietary Licence
+
+Copyright © 2026 Felicity Miller. All rights reserved.
+
+This software, source code, design, documentation and associated materials
+(collectively, the “Software”) are proprietary to Felicity Miller.
+
+No permission is granted to copy, reproduce, modify, adapt, translate,
+publish, distribute, sublicense, sell, lease, host for third parties,
+commercially exploit, or create derivative works from the Software, in whole
+or in part, without prior written permission from the copyright owner.
+
+The copyright owner may separately authorise a school, organisation or
+individual to evaluate, configure, deploy or use the Software. Any such
+authorisation is limited to the purpose and scope expressly agreed and does
+not transfer ownership of the Software.
+
+This licence does not apply to third-party software, services or libraries
+used by or accessed through the Software. Those components remain subject to
+their own licence terms.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT
+PERMITTED BY LAW, THE COPYRIGHT OWNER SHALL NOT BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+For permission enquiries, contact the copyright owner.

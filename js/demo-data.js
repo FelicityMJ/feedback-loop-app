@@ -85,8 +85,9 @@ export const demoData = {
     { id: "i2", pupilId: "pupil-2", classId: "n5-computing-a", concernArea: "Extended explanations", concernLevel: "Medium", action: "Use model-answer structure for explain/justify questions.", ownerId: "demo-teacher", openedAt: daysAgo(20), reviewDate: daysAgo(-2), impact: "More precise answers in recent classwork.", status: "In progress" }
   ],
   invites: [
-    { id: "northbridge-academy~TEACH-9K4M", schoolId: DEMO_SCHOOL_ID, role: "teacher", departmentIds: ["computing-business"], active: true, label: "Computing teacher invite" },
-    { id: "northbridge-academy~4ACOMP-26", schoolId: DEMO_SCHOOL_ID, role: "pupil", classIds: ["n5-computing-a"], active: true, label: "4A Computing pupil code" }
+    { id: "northbridge-academy~HEAD-4K7Q", schoolId: DEMO_SCHOOL_ID, role: "departmentHead", departmentIds: ["computing-business"], classIds: [], active: true, label: "Computing and Business department-head code", scopeType: "department", scopeLabel: "Computing and Business", createdBy: "demo-admin" },
+    { id: "northbridge-academy~TEACH-9K4M", schoolId: DEMO_SCHOOL_ID, role: "teacher", departmentIds: ["computing-business"], classIds: [], active: true, label: "Computing and Business teacher department code", scopeType: "department", scopeLabel: "Computing and Business", createdBy: "demo-head" },
+    { id: "northbridge-academy~4ACOMP-26", schoolId: DEMO_SCHOOL_ID, role: "pupil", departmentIds: ["computing-business"], classIds: ["n5-computing-a"], subjectId: "computing-science", active: true, label: "4A Computing pupil class code", scopeType: "class", scopeLabel: "4A Computing", createdBy: "demo-teacher" }
   ],
   transferRequests: [],
   emailChangeRequests: []

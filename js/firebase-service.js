@@ -211,17 +211,19 @@ export async function registerWithInvite({ displayName, email, password, inviteC
       inviteCode: code
     };
     state.users.push(user);
-    for (const classId of invite.classIds || []) {
-      const cls = state.classes.find((c) => c.id === classId);
-      state.memberships.push({
-        id: randomId("m-"),
-        userId: id,
-        classId,
-        subjectId: cls?.subjectId || "",
-        targetGrade: "",
-        currentGrade: "",
-        active: true
-      });
+    if (invite.role === "pupil") {
+      for (const classId of invite.classIds || []) {
+        const cls = state.classes.find((c) => c.id === classId);
+        state.memberships.push({
+          id: randomId("m-"),
+          userId: id,
+          classId,
+          subjectId: cls?.subjectId || "",
+          targetGrade: "",
+          currentGrade: "",
+          active: true
+        });
+      }
     }
     saveDemoState(state);
     localStorage.setItem(demoUserKey, id);
@@ -271,18 +273,20 @@ export async function registerWithInvite({ displayName, email, password, inviteC
     updatedAt: serverTimestamp()
   };
   batch.set(doc(db, "users", result.user.uid), profile);
-  for (const classId of invite.classIds || []) {
-    const membershipRef = doc(collection(db, "schools", schoolId, "memberships"));
-    batch.set(membershipRef, {
-      userId: result.user.uid,
-      classId,
-      subjectId: invite.subjectId || "",
-      targetGrade: "",
-      currentGrade: "",
-      active: true,
-      inviteCode: code,
-      createdAt: serverTimestamp()
-    });
+  if (invite.role === "pupil") {
+    for (const classId of invite.classIds || []) {
+      const membershipRef = doc(collection(db, "schools", schoolId, "memberships"));
+      batch.set(membershipRef, {
+        userId: result.user.uid,
+        classId,
+        subjectId: invite.subjectId || "",
+        targetGrade: "",
+        currentGrade: "",
+        active: true,
+        inviteCode: code,
+        createdAt: serverTimestamp()
+      });
+    }
   }
   try {
     await batch.commit();
@@ -354,7 +358,11 @@ export async function loadAppData(profile) {
     isPupil ? safeFetch(["schools", schoolId, "feedbackRecords"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackRecords"]),
     isPupil ? safeFetch(["schools", schoolId, "feedbackActions"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackActions"]),
     isPupil ? Promise.resolve([]) : safeFetch(["schools", schoolId, "interventions"]),
-    profile.role === "schoolAdmin" ? safeFetch(["schools", schoolId, "invites"]) : Promise.resolve([])
+    profile.role === "schoolAdmin"
+      ? safeFetch(["schools", schoolId, "invites"])
+      : staff
+        ? safeFetch(["schools", schoolId, "invites"], [where("createdBy", "==", profile.id)])
+        : Promise.resolve([])
   ]);
 
   const [transferFrom, transferTo, emailChangeRequests] = await Promise.all([

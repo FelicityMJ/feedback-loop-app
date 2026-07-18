@@ -310,7 +310,7 @@ function renderAuth() {
     <section class="auth-panel">
       <div class="auth-card">
         <h2>${register ? "Create your account" : "Welcome back"}</h2>
-        <p>${register ? "Use the invitation code supplied by your school." : "Sign in to open your personalised dashboard."}</p>
+        <p>${register ? "Use the class or department code supplied to you." : "Sign in to open your personalised dashboard."}</p>
         <div class="auth-tabs">
           <button class="auth-tab ${!register ? "active" : ""}" data-auth-tab="signin">Sign in</button>
           <button class="auth-tab ${register ? "active" : ""}" data-auth-tab="register">Join a school</button>
@@ -320,7 +320,7 @@ function renderAuth() {
             <div class="field"><label>Full name</label><input name="displayName" autocomplete="name" required></div>
             <div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div>
             <div class="field"><label>Password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div>
-            <div class="field"><label>School invitation code</label><input name="inviteCode" placeholder="school-id~CODE" required><span class="field-help">Teachers, pupils and department heads receive this from the school administrator.</span></div>
+            <div class="field"><label>Class or department code</label><input name="inviteCode" placeholder="school-id~CODE" required><span class="field-help">Pupils receive a class code from their teacher. Teachers receive a department code from their department head. Department heads receive their code from the school administrator.</span></div>
             <button class="btn btn-primary" type="submit">Create account</button>
           </form>` : `
           <form data-form="signin">
@@ -533,7 +533,8 @@ function renderTeacherClasses() {
   const classes = classesVisibleToProfile();
   return `<div class="page-head"><div><h1>My classes</h1><p>Create classes, check membership and use a pupil invitation code for straightforward enrolment.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="add-class">Add class</button></div></div>
     <div class="grid grid-3">${classes.map((cls) => `<section class="card card-pad"><div class="timeline-meta">${badge(cls.targetQualification || "Course")}</div><h3>${e(cls.name)}</h3><p class="muted">${e(getSubjectName(cls.subjectId))} · ${e(cls.academicYear || "")}</p><div class="grid grid-2"><div><strong>${pupilsForClass(cls.id).length}</strong><div class="small muted">Pupils</div></div><div><strong>${classAverage(cls.id)}%</strong><div class="small muted">Average</div></div></div><div class="form-actions"><button class="btn btn-ghost btn-sm" data-action="select-class" data-id="${cls.id}">Open class</button><button class="btn btn-secondary btn-sm" data-action="class-invite" data-id="${cls.id}">Pupil code</button></div></section>`).join("") || `<div class="card empty span-3">No classes yet.</div>`}</div>
-    ${teacherSelectedClass() ? `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>${e(teacherSelectedClass().name)} pupil list</h3></div></div>${classSnapshotTable(teacherSelectedClass())}</section>` : ""}`;
+    ${teacherSelectedClass() ? `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>${e(teacherSelectedClass().name)} pupil list</h3></div></div>${classSnapshotTable(teacherSelectedClass())}</section>` : ""}
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Pupil class codes</h3><p>Each code adds pupils only to its named class. Copy an existing code or disable it when enrolment is complete.</p></div></div>${inviteCodeTable((state.data.invites || []).filter((invite) => invite.role === "pupil"))}</section>`;
 }
 
 function renderTeacherFeedback() {
@@ -577,9 +578,10 @@ function renderHeadOverview() {
   const risks = pupilIds.map((id) => ({ pupil: byId(state.data.users, id), ...atRiskInfo(id) }));
   const high = risks.filter((r) => r.level === "High");
   const open = (state.data.feedbackRecords || []).filter((f) => pupilIds.includes(f.pupilId) && f.status !== "closed" && f.status !== "draft").length;
-  return `<div class="page-head"><div><h1>Department overview</h1><p>Compare classes, identify recurring weaknesses and make sure intervention is based on more than a single low mark.</p></div></div>
+  return `<div class="page-head"><div><h1>Department overview</h1><p>Compare classes, identify recurring weaknesses and make sure intervention is based on more than a single low mark.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="create-invite">Teacher department code</button></div></div>
     <div class="grid grid-4">${kpi("▤", "Linked classes", classes.length)}${kpi("♟", "Pupils", pupilIds.length)}${kpi("✎", "Open feedback loops", open)}${kpi("⚑", "High-risk pupils", high.length)}</div>
     <div class="grid grid-2" style="margin-top:18px"><section class="card"><div class="card-head"><div><h3>Class tracking</h3><p>Average attainment and pupils below target.</p></div></div><div class="card-body">${classes.map((c) => { const pupils=pupilsForClass(c.id); const below=pupils.filter(p=>atRiskInfo(p.id,c.id).reasons.includes("below target")).length; return `<div class="progress-row"><span>${e(c.name)}</span><div class="progress-track"><div class="progress-bar" style="width:${classAverage(c.id)}%"></div></div><strong>${classAverage(c.id)}%</strong><div class="small muted" style="grid-column:2/4">${below} below target · ${pupils.length} pupils</div></div>`; }).join("") || `<div class="empty">No linked classes.</div>`}</div></section><section class="card"><div class="card-head"><div><h3>Common misconceptions</h3><p>Feedback themes across the department.</p></div></div><div class="card-body">${miniBarSvg(skillCountsForClasses(classes), "count", "skill")}</div></section></div>
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Teacher department codes</h3><p>Share a department code with teachers joining your department. It can be reused until you disable it.</p></div><button class="btn btn-primary btn-sm" data-action="create-invite">Create code</button></div>${inviteCodeTable((state.data.invites || []).filter((i) => i.role === "teacher"))}</section>
     <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Pupils requiring review</h3><p>High and medium indicators are surfaced for professional judgement.</p></div><button class="btn btn-ghost btn-sm" data-route="at-risk">View full list</button></div>${riskTable(risks.filter((r) => r.level !== "Low").slice(0,8))}</section>`;
 }
 
@@ -589,7 +591,7 @@ function riskTable(risks) {
 
 function renderHeadClasses() {
   const classes = headClasses();
-  return `<div class="page-head"><div><h1>Department classes</h1><p>Use class-level patterns to support teachers and plan departmental intervention.</p></div></div><div class="grid grid-3">${classes.map((c) => `<section class="card card-pad"><h3>${e(c.name)}</h3><p class="muted">${e(getSubjectName(c.subjectId))} · ${pupilsForClass(c.id).length} pupils</p><div class="progress-row"><span>Average</span><div class="progress-track"><div class="progress-bar" style="width:${classAverage(c.id)}%"></div></div><strong>${classAverage(c.id)}%</strong></div><p>${badge(`${pupilsForClass(c.id).filter(p=>atRiskInfo(p.id,c.id).level!=="Low").length} to review`)}</p><button class="btn btn-ghost btn-sm" data-action="select-class" data-id="${c.id}">Open class</button></section>`).join("")}</div>${teacherSelectedClass() ? `<section class="card" style="margin-top:18px"><div class="card-head"><h3>${e(teacherSelectedClass().name)}</h3><select class="btn btn-ghost" data-class-select>${selectOptions(classes, teacherSelectedClass().id)}</select></div>${classSnapshotTable(teacherSelectedClass())}</section>` : ""}`;
+  return `<div class="page-head"><div><h1>Department classes</h1><p>Assign teachers, compare class patterns and plan departmental intervention.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="add-class">Add class</button></div></div><div class="grid grid-3">${classes.map((c) => `<section class="card card-pad"><h3>${e(c.name)}</h3><p class="muted">${e(getSubjectName(c.subjectId))} · ${pupilsForClass(c.id).length} pupils</p><p class="small"><strong>Teachers:</strong> ${e((c.teacherIds || []).map(getUserName).join(", ") || "Not assigned")}</p><div class="progress-row"><span>Average</span><div class="progress-track"><div class="progress-bar" style="width:${classAverage(c.id)}%"></div></div><strong>${classAverage(c.id)}%</strong></div><p>${badge(`${pupilsForClass(c.id).filter(p=>atRiskInfo(p.id,c.id).level!=="Low").length} to review`)}</p><div class="form-actions"><button class="btn btn-ghost btn-sm" data-action="select-class" data-id="${c.id}">Open class</button><button class="btn btn-secondary btn-sm" data-action="assign-teacher" data-id="${c.id}">Assign teacher</button></div></section>`).join("")}</div>${teacherSelectedClass() ? `<section class="card" style="margin-top:18px"><div class="card-head"><h3>${e(teacherSelectedClass().name)}</h3><select class="btn btn-ghost" data-class-select>${selectOptions(classes, teacherSelectedClass().id)}</select></div>${classSnapshotTable(teacherSelectedClass())}</section>` : ""}`;
 }
 
 function renderAtRisk() {
@@ -610,7 +612,7 @@ function renderAdminOverview() {
   const pupils = state.data.users.filter((u) => u.role === "pupil");
   const staff = state.data.users.filter((u) => u.role !== "pupil");
   const risks = pupils.map((p) => ({ pupil:p, ...atRiskInfo(p.id) })).filter((r)=>r.level!=="Low");
-  return `<div class="page-head"><div><h1>School overview</h1><p>Manage the school structure and see whether feedback is turning into pupil action across departments.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="create-invite">Create invitation</button></div></div>
+  return `<div class="page-head"><div><h1>School overview</h1><p>Manage the school structure and see whether feedback is turning into pupil action across departments.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="create-invite">Create department-head code</button></div></div>
     <div class="grid grid-4">${kpi("♟", "Pupils", pupils.length)}${kpi("◎", "Staff", staff.length)}${kpi("▤", "Classes", state.data.classes.length)}${kpi("⚑", "Pupils to review", risks.length)}</div>
     <div class="grid grid-2" style="margin-top:18px"><section class="card"><div class="card-head"><div><h3>Feedback-loop health</h3><p>How many feedback records have reached action and closure.</p></div></div><div class="card-body">${miniBarSvg([
       {label:"Open",value:state.data.feedbackRecords.filter(f=>f.status==="open"||f.status==="overdue").length},
@@ -623,15 +625,15 @@ function renderAdminOverview() {
 function renderAdminSetup() {
   return `<div class="page-head"><div><h1>School setup</h1><p>Create departments and subjects first, then classes and invitation codes.</p></div><div class="page-actions"><button class="btn btn-ghost" data-action="add-department">Add department</button><button class="btn btn-ghost" data-action="add-subject">Add subject</button><button class="btn btn-primary" data-action="add-class">Add class</button></div></div>
     <div class="alert alert-info" style="margin-bottom:18px"><strong>School transfer code:</strong>&nbsp; <code>${e(currentSchool().transferCode || "Add a transferCode field to the school document")}</code><span class="small"> — give this only to a pupil who is moving into your school.</span></div>
-    <div class="grid grid-2"><section class="card"><div class="card-head"><div><h3>Departments</h3></div></div><div class="table-wrap"><table><thead><tr><th>Department</th><th>Head IDs</th></tr></thead><tbody>${state.data.departments.map((d)=>`<tr><td>${e(d.name)}</td><td>${e((d.headIds||[]).map(getUserName).join(", ")||"Not assigned")}</td></tr>`).join("")||`<tr><td colspan="2" class="empty">No departments.</td></tr>`}</tbody></table></div></section>
+    <div class="grid grid-2"><section class="card"><div class="card-head"><div><h3>Departments</h3></div></div><div class="table-wrap"><table><thead><tr><th>Department</th><th>Head IDs</th></tr></thead><tbody>${state.data.departments.map((d)=>{const heads=state.data.users.filter((u)=>u.role==="departmentHead"&&(u.departmentIds||[]).includes(d.id));return `<tr><td>${e(d.name)}</td><td>${e(heads.map((u)=>u.displayName).join(", ")||"Not assigned")}</td></tr>`}).join("")||`<tr><td colspan="2" class="empty">No departments.</td></tr>`}</tbody></table></div></section>
     <section class="card"><div class="card-head"><div><h3>Subjects</h3></div></div><div class="table-wrap"><table><thead><tr><th>Subject</th><th>Department</th><th>Scale</th></tr></thead><tbody>${state.data.subjects.map((s)=>`<tr><td>${e(s.name)}</td><td>${e(byId(state.data.departments,s.departmentId)?.name||"")}</td><td>${e(s.gradeScale||"A-D")}</td></tr>`).join("")||`<tr><td colspan="3" class="empty">No subjects.</td></tr>`}</tbody></table></div></section></div>
     <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Classes</h3></div></div><div class="table-wrap"><table><thead><tr><th>Class</th><th>Subject</th><th>Teachers</th><th>Pupils</th><th>Year</th></tr></thead><tbody>${state.data.classes.map((c)=>`<tr><td>${e(c.name)}</td><td>${e(getSubjectName(c.subjectId))}</td><td>${e((c.teacherIds||[]).map(getUserName).join(", ")||"Not assigned")}</td><td>${pupilsForClass(c.id).length}</td><td>${e(c.academicYear||"")}</td></tr>`).join("")}</tbody></table></div></section>
-    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Invitation codes</h3><p>Codes can be limited to a role, department, class or email address.</p></div><button class="btn btn-primary btn-sm" data-action="create-invite">Create code</button></div><div class="table-wrap"><table><thead><tr><th>Label</th><th>Role</th><th>Code</th><th>Status</th></tr></thead><tbody>${state.data.invites.map((i)=>`<tr><td>${e(i.label||"")}</td><td>${e(roleLabels[i.role]||i.role)}</td><td><code>${e(i.id)}</code></td><td>${badge(i.active?"Active":"Disabled")}</td></tr>`).join("")||`<tr><td colspan="4" class="empty">No invitation codes.</td></tr>`}</tbody></table></div></section>`;
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Invitation code register</h3><p>The school administrator creates department-head codes. Department heads create teacher codes, and teachers create pupil class codes.</p></div><button class="btn btn-primary btn-sm" data-action="create-invite">Create department-head code</button></div>${inviteCodeTable(state.data.invites || [])}</section>`;
 }
 
 function renderAdminPeople() {
   const users = [...state.data.users].sort((a,b)=>a.displayName.localeCompare(b.displayName));
-  return `<div class="page-head"><div><h1>People and classes</h1><p>Accounts are linked to a permanent user ID. Email addresses can change without creating a new pupil profile.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="create-invite">Invite user</button></div></div><section class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Email</th><th>Classes</th><th>Status</th><th></th></tr></thead><tbody>${users.map((u)=>{const cls=u.role==="pupil"?state.data.memberships.filter(m=>m.userId===u.id).map(m=>getClassName(m.classId)):state.data.classes.filter(c=>(c.teacherIds||[]).includes(u.id)).map(c=>c.name);return `<tr><td><strong>${e(u.displayName)}</strong><div class="small muted">${e(u.learnerId||u.id)}</div></td><td>${badge(roleLabels[u.role]||u.role)}</td><td>${e(u.email)}</td><td>${e(cls.join(", ")||"—")}</td><td>${badge(u.active===false?"Inactive":"Active")}</td><td>${u.role==="pupil"?`<button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${u.id}">Dashboard</button>`:""}</td></tr>`}).join("")}</tbody></table></div></section>`;
+  return `<div class="page-head"><div><h1>People and classes</h1><p>Accounts are linked to a permanent user ID. Email addresses can change without creating a new pupil profile.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="create-invite">Department-head code</button></div></div><section class="card"><div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Email</th><th>Classes</th><th>Status</th><th></th></tr></thead><tbody>${users.map((u)=>{const cls=u.role==="pupil"?state.data.memberships.filter(m=>m.userId===u.id).map(m=>getClassName(m.classId)):state.data.classes.filter(c=>(c.teacherIds||[]).includes(u.id)).map(c=>c.name);return `<tr><td><strong>${e(u.displayName)}</strong><div class="small muted">${e(u.learnerId||u.id)}</div></td><td>${badge(roleLabels[u.role]||u.role)}</td><td>${e(u.email)}</td><td>${e(cls.join(", ")||"—")}</td><td>${badge(u.active===false?"Inactive":"Active")}</td><td>${u.role==="pupil"?`<button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${u.id}">Dashboard</button>`:""}</td></tr>`}).join("")}</tbody></table></div></section>`;
 }
 
 function renderAdminRequests() {
@@ -666,13 +668,47 @@ function modalAddSubject() {
 }
 
 function modalAddClass() {
-  const staff = state.data.users.filter((u)=>["teacher","departmentHead"].includes(u.role));
-  openModal("Add class", `<form data-form="add-class" class="form-grid"><div class="field"><label>Class name</label><input name="name" required placeholder="4A Computing"></div><div class="field"><label>Subject</label><select name="subjectId" required>${selectOptions(state.data.subjects, "")}</select></div><div class="field"><label>Lead teacher</label><select name="teacherId"><option value="">Not assigned</option>${selectOptions(staff, state.profile.role==="teacher"?state.profile.id:"", "displayName")}</select></div><div class="field"><label>Academic year</label><input name="academicYear" value="2026/27"></div><div class="field"><label>Qualification</label><input name="targetQualification" placeholder="National 5"></div><div class="form-actions full"><button class="btn btn-primary">Create class</button></div></form>`);
+  const departmentIds = state.profile.role === "schoolAdmin" ? state.data.departments.map((department) => department.id) : (state.profile.departmentIds || []);
+  const subjects = state.data.subjects.filter((subject) => departmentIds.includes(subject.departmentId));
+  const teachers = state.data.users.filter((user) => user.role === "teacher" && (user.departmentIds || []).some((id) => departmentIds.includes(id)));
+  if (!subjects.length) return toast("Create or join a department with at least one subject first.", "error");
+  openModal("Add class", `<form data-form="add-class" class="form-grid"><div class="field"><label>Class name</label><input name="name" required placeholder="4A Computing"></div><div class="field"><label>Subject</label><select name="subjectId" required>${selectOptions(subjects, "")}</select></div><div class="field"><label>Lead teacher</label><select name="teacherId"><option value="">Not assigned</option>${selectOptions(teachers, state.profile.role==="teacher"?state.profile.id:"", "displayName")}</select></div><div class="field"><label>Academic year</label><input name="academicYear" value="2026/27"></div><div class="field"><label>Qualification</label><input name="targetQualification" placeholder="National 5"></div><div class="form-actions full"><button class="btn btn-primary">Create class</button></div></form>`);
+}
+
+function inviteCodeTable(invites) {
+  return `<div class="table-wrap"><table><thead><tr><th>Label</th><th>For</th><th>Code</th><th>Status</th><th></th></tr></thead><tbody>${invites.map((i) => `<tr><td>${e(i.label || "")}</td><td>${e(i.scopeLabel || roleLabels[i.role] || i.role)}</td><td><code>${e(i.id)}</code></td><td>${badge(i.active ? "Active" : "Disabled")}</td><td><button class="btn btn-ghost btn-sm" data-action="copy-code" data-code="${e(i.id)}">Copy</button> <button class="btn btn-ghost btn-sm" data-action="toggle-invite" data-id="${e(i.id)}" data-active="${i.active ? "true" : "false"}">${i.active ? "Disable" : "Enable"}</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">No codes have been created yet.</td></tr>`}</tbody></table></div>`;
+}
+
+
+function modalAssignTeacher(classId) {
+  const cls = byId(state.data.classes, classId);
+  if (!cls) return toast("Class not found.", "error");
+  const teachers = state.data.users.filter((user) => user.role === "teacher" && (user.departmentIds || []).includes(cls.departmentId));
+  if (!teachers.length) return toast("No teacher has joined this department yet.", "error");
+  openModal("Assign teacher to class", `<form data-form="assign-teacher" class="form-grid"><input type="hidden" name="classId" value="${e(cls.id)}"><div class="field full"><label>Class</label><input value="${e(cls.name)}" disabled></div><div class="field full"><label>Teacher</label><select name="teacherId" required>${selectOptions(teachers, "", "displayName")}</select><span class="field-help">The teacher must first join using the department code.</span></div><div class="form-actions full"><button class="btn btn-primary">Assign teacher</button></div></form>`);
 }
 
 function modalCreateInvite(prefill = {}) {
-  const classes = state.data.classes;
-  openModal("Create invitation code", `<form data-form="create-invite" class="form-grid"><div class="field full"><label>Label</label><input name="label" required placeholder="4A Computing pupil code"></div><div class="field"><label>Role</label><select name="role" required><option value="pupil" ${prefill.role==="pupil"?"selected":""}>Pupil</option><option value="teacher">Teacher</option><option value="departmentHead">Department head</option></select></div><div class="field"><label>Class (optional)</label><select name="classId"><option value="">No class</option>${selectOptions(classes,prefill.classId||"")}</select></div><div class="field"><label>Department (optional)</label><select name="departmentId"><option value="">No department</option>${selectOptions(state.data.departments,"")}</select></div><div class="field"><label>Restrict to email (optional)</label><input type="email" name="emailRestriction"></div><div class="form-actions full"><button class="btn btn-primary">Generate code</button></div></form>`);
+  if (state.profile.role === "teacher") {
+    const classes = classesVisibleToProfile();
+    const selected = byId(classes, prefill.classId) || classes[0];
+    if (!selected) return toast("You must be assigned to a class before creating a pupil code.", "error");
+    openModal("Create pupil class code", `<div class="alert alert-info">Every pupil who uses this code will join the selected class. The code determines that the account is a pupil account.</div><form data-form="create-invite" class="form-grid"><input type="hidden" name="scope" value="classPupil"><div class="field full"><label>Class</label><select name="classId" required>${selectOptions(classes, selected.id)}</select></div><div class="field full"><label>Label</label><input name="label" required value="${e(selected.name)} pupil class code"></div><div class="form-actions full"><button class="btn btn-primary">Generate reusable class code</button></div></form>`);
+    return;
+  }
+
+  const departments = state.profile.role === "departmentHead"
+    ? state.data.departments.filter((department) => (state.profile.departmentIds || []).includes(department.id))
+    : state.data.departments;
+  const selected = byId(departments, prefill.departmentId) || departments[0];
+  if (!selected) return toast("Create or link a department before creating this code.", "error");
+
+  if (state.profile.role === "departmentHead") {
+    openModal("Create teacher department code", `<div class="alert alert-info">Share this reusable code only with teachers joining the selected department. It does not place them into a class; you can assign classes after they join.</div><form data-form="create-invite" class="form-grid"><input type="hidden" name="scope" value="departmentTeacher"><div class="field full"><label>Department</label><select name="departmentId" required>${selectOptions(departments, selected.id)}</select></div><div class="field full"><label>Label</label><input name="label" required value="${e(selected.name)} teacher department code"></div><div class="form-actions full"><button class="btn btn-primary">Generate reusable department code</button></div></form>`);
+    return;
+  }
+
+  openModal("Create department-head code", `<div class="alert alert-info">Give this code to the department head for the selected department. They will then create teacher codes for their own department.</div><form data-form="create-invite" class="form-grid"><input type="hidden" name="scope" value="departmentHead"><div class="field full"><label>Department</label><select name="departmentId" required>${selectOptions(departments, selected.id)}</select></div><div class="field full"><label>Label</label><input name="label" required value="${e(selected.name)} department-head code"></div><div class="form-actions full"><button class="btn btn-primary">Generate department-head code</button></div></form>`);
 }
 
 function classPupilOptions(classId) {
@@ -1064,6 +1100,21 @@ app.addEventListener("click", async (event) => {
   const action = actionEl.dataset.action;
   const id = actionEl.dataset.id;
   if (action === "close-modal") { closeModal(); return; }
+  if (action === "copy-code") {
+    const code = actionEl.dataset.code || "";
+    try { await navigator.clipboard.writeText(code); toast("Code copied."); }
+    catch { prompt("Copy this code:", code); }
+    return;
+  }
+  if (action === "toggle-invite") {
+    const nextActive = actionEl.dataset.active !== "true";
+    await withBusy(actionEl, async () => {
+      await updateSchoolEntity(state.profile.schoolId, "invites", id, { active: nextActive });
+      await refresh();
+      toast(nextActive ? "Code enabled." : "Code disabled.");
+    });
+    return;
+  }
   if (action === "signout") { state.feedbackUnsubscribe?.(); state.feedbackUnsubscribe=null; await signOut(); state.authUser=null;state.profile=null;state.data=null;renderAuth(); return; }
   if (action === "google-signin") { await withBusy(actionEl, async()=>{const user=await signInWithGoogle();await initialiseUser(user);}); return; }
   if (action === "forgot-password") {
@@ -1076,6 +1127,7 @@ app.addEventListener("click", async (event) => {
   if (action === "add-class") return modalAddClass();
   if (action === "create-invite") return modalCreateInvite();
   if (action === "class-invite") return modalCreateInvite({role:"pupil",classId:id});
+  if (action === "assign-teacher") return modalAssignTeacher(id);
   if (action === "add-assessment") return modalAddAssessment();
   if (action === "add-feedback") return modalAddFeedback();
   if (action === "pupil-add-feedback") return modalPupilAddFeedback();
@@ -1177,10 +1229,36 @@ app.addEventListener("submit", async (event) => {
         await createSchoolEntity(state.profile.schoolId,"classes",{name:data.name,subjectId:data.subjectId,departmentId:subject?.departmentId||"",teacherIds:data.teacherId?[data.teacherId]:[],academicYear:data.academicYear,targetQualification:data.targetQualification,active:true});
         closeModal(); await refresh(); toast("Class created."); break;
       }
+      case "assign-teacher": {
+        const cls = byId(state.data.classes, data.classId);
+        const teacher = byId(state.data.users, data.teacherId);
+        if (!cls || !teacher || teacher.role !== "teacher") throw new Error("Choose a valid teacher.");
+        if (!(teacher.departmentIds || []).includes(cls.departmentId)) throw new Error("That teacher has not joined this class department.");
+        await updateSchoolEntity(state.profile.schoolId, "classes", cls.id, { teacherIds: unique([...(cls.teacherIds || []), teacher.id]) });
+        closeModal(); await refresh(); toast("Teacher assigned to class."); break;
+      }
       case "create-invite": {
-        const cls=byId(state.data.classes,data.classId);
-        const invite=await createInvite(state.profile.schoolId,{label:data.label,role:data.role,classIds:data.classId?[data.classId]:[],subjectId:cls?.subjectId||"",departmentIds:data.departmentId?[data.departmentId]:[],emailRestriction:data.emailRestriction||"",createdBy:state.profile.id});
-        closeModal(); await refresh(); navigator.clipboard?.writeText(invite.id); toast(`Invitation created and copied: ${invite.id}`); break;
+        let payload;
+        if (data.scope === "classPupil") {
+          const cls = byId(classesVisibleToProfile(), data.classId);
+          if (!cls) throw new Error("Choose one of your own classes.");
+          payload = { label: data.label, role: "pupil", scopeType: "class", scopeLabel: cls.name, classIds: [cls.id], subjectId: cls.subjectId || "", departmentIds: cls.departmentId ? [cls.departmentId] : [], createdBy: state.profile.id };
+        } else if (data.scope === "departmentTeacher") {
+          const department = byId(state.data.departments, data.departmentId);
+          if (!department || !(state.profile.departmentIds || []).includes(department.id)) throw new Error("Choose a department you lead.");
+          payload = { label: data.label, role: "teacher", scopeType: "department", scopeLabel: department.name, classIds: [], subjectId: "", departmentIds: [department.id], createdBy: state.profile.id };
+        } else if (data.scope === "departmentHead") {
+          const department = byId(state.data.departments, data.departmentId);
+          if (!department || state.profile.role !== "schoolAdmin") throw new Error("Only a school administrator can create a department-head code.");
+          payload = { label: data.label, role: "departmentHead", scopeType: "department", scopeLabel: department.name, classIds: [], subjectId: "", departmentIds: [department.id], createdBy: state.profile.id };
+        } else {
+          throw new Error("The invitation type was not recognised.");
+        }
+        const invite = await createInvite(state.profile.schoolId, payload);
+        await refresh();
+        openModal("Code ready", `<div class="alert alert-success"><strong>${e(payload.label)}</strong><p>This code can be reused until it is disabled.</p></div><div class="code-display"><code>${e(invite.id)}</code></div><div class="form-actions"><button class="btn btn-primary" data-action="copy-code" data-code="${e(invite.id)}">Copy code</button><button class="btn btn-ghost" data-action="close-modal">Done</button></div>`);
+        try { await navigator.clipboard.writeText(invite.id); toast("Code created and copied."); } catch { toast("Code created. Use Copy code to copy it."); }
+        break;
       }
       case "add-assessment": {
         const cls=byId(state.data.classes,data.classId); const score=Number(data.score); const maxScore=Number(data.maxScore);
@@ -1226,7 +1304,7 @@ async function initialiseUser(user) {
     const profile=await getUserProfile(user);
     if(!profile){
       state.profile=null;state.data=null;
-      app.innerHTML=`<div class="loading"><div class="card card-pad" style="max-width:600px"><h2>Account needs a school profile</h2><p>Your Firebase sign-in exists, but no FeedbackLoop user document has been created. Sign out and use a school invitation code, or complete the one-time administrator setup in the supplied guide.</p><button class="btn btn-primary" data-action="signout">Sign out</button></div></div>`;
+      app.innerHTML=`<div class="loading"><div class="card card-pad" style="max-width:600px"><h2>Account needs a school profile</h2><p>Your Firebase sign-in exists, but no FeedbackLoop user document has been created. Sign out and use the class or department code supplied to you, or complete the one-time administrator setup in the supplied guide.</p><button class="btn btn-primary" data-action="signout">Sign out</button></div></div>`;
       return;
     }
     state.profile=profile;

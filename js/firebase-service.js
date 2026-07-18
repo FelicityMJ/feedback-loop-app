@@ -8,7 +8,7 @@ let auth = null;
 let db = null;
 let initializeApp, getAuth, onAuthStateChanged, signInWithEmailAndPassword;
 let createUserWithEmailAndPassword, firebaseSignOut, sendPasswordResetEmail;
-let sendEmailVerification, GoogleAuthProvider, signInWithPopup, updateProfile;
+let sendEmailVerification, GoogleAuthProvider, signInWithPopup, updateProfile, deleteUser;
 let verifyBeforeUpdateEmail, getFirestore, doc, getDoc, getDocs, setDoc;
 let addDoc, updateDoc, deleteDoc, collection, query, where, limit, onSnapshot;
 let serverTimestamp, writeBatch, arrayUnion;
@@ -23,7 +23,7 @@ const firebaseReady = isDemoMode ? Promise.resolve() : Promise.all([
     getAuth, onAuthStateChanged, signInWithEmailAndPassword,
     createUserWithEmailAndPassword, signOut: firebaseSignOut,
     sendPasswordResetEmail, sendEmailVerification, GoogleAuthProvider,
-    signInWithPopup, updateProfile, verifyBeforeUpdateEmail
+    signInWithPopup, updateProfile, deleteUser, verifyBeforeUpdateEmail
   } = authMod);
   ({
     getFirestore, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
@@ -237,7 +237,24 @@ export async function registerWithInvite({ displayName, email, password, inviteC
     throw new Error("This invitation was issued for a different email address.");
   }
 
-  const result = await createUserWithEmailAndPassword(auth, email, password);
+  let result;
+  let createdNow = false;
+  try {
+    result = await createUserWithEmailAndPassword(auth, email, password);
+    createdNow = true;
+  } catch (error) {
+    // A previous failed Firestore profile write can leave the Firebase Auth
+    // account behind. Let that person sign in with the same password and
+    // finish redeeming the invitation instead of forcing an administrator to
+    // delete the account manually.
+    if (error?.code !== "auth/email-already-in-use") throw error;
+    result = await signInWithEmailAndPassword(auth, email, password);
+    const existingProfile = await getDoc(doc(db, "users", result.user.uid));
+    if (existingProfile.exists()) {
+      throw new Error("This account already has a FeedbackLoop profile. Use Sign in instead.");
+    }
+  }
+
   await updateProfile(result.user, { displayName });
   const batch = writeBatch(db);
   const profile = {
@@ -267,7 +284,21 @@ export async function registerWithInvite({ displayName, email, password, inviteC
       createdAt: serverTimestamp()
     });
   }
-  await batch.commit();
+  try {
+    await batch.commit();
+  } catch (error) {
+    // Authentication and Firestore are separate services. If this function
+    // created the Auth account but Firestore rejected the profile batch,
+    // remove the new Auth account so the person can retry cleanly.
+    if (createdNow) {
+      try {
+        await deleteUser(result.user);
+      } catch (cleanupError) {
+        console.warn("Could not remove incomplete Firebase Auth account.", cleanupError);
+      }
+    }
+    throw error;
+  }
   await sendEmailVerification(result.user, { url: appSettings.publicAppUrl });
   return result.user;
 }

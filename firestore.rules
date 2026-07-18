@@ -151,12 +151,64 @@ service cloud.firestore {
 
       match /assessments/{assessmentId} {
         allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
-        allow create, update, delete: if isStaff(schoolId);
+
+        allow create: if isStaff(schoolId)
+          || (isCurrentSchool(schoolId)
+            && me().role == 'pupil'
+            && request.resource.data.pupilId == request.auth.uid
+            && request.resource.data.entrySource == 'pupil'
+            && request.resource.data.verificationStatus == 'selfEntered');
+
+        allow update: if isStaff(schoolId)
+          || (ownsPupilRecord(resource.data)
+            && resource.data.entrySource == 'pupil'
+            && request.resource.data.pupilId == request.auth.uid
+            && request.resource.data.classId == resource.data.classId
+            && request.resource.data.subjectId == resource.data.subjectId
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'name', 'topic', 'date', 'score', 'maxScore', 'percentage', 'grade',
+              'entrySource', 'verificationStatus', 'feedbackRecordId', 'updatedAt'
+            ]));
+
+        allow delete: if isStaff(schoolId);
       }
 
       match /feedbackRecords/{feedbackId} {
         allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
-        allow create, update, delete: if isStaff(schoolId);
+
+        allow create: if isStaff(schoolId)
+          || (isCurrentSchool(schoolId)
+            && me().role == 'pupil'
+            && request.resource.data.pupilId == request.auth.uid
+            && request.resource.data.entrySource == 'pupil'
+            && request.resource.data.verificationStatus == 'selfEntered'
+            && request.resource.data.status in ['draft', 'open']);
+
+        allow update: if isStaff(schoolId)
+          || (ownsPupilRecord(resource.data)
+            && resource.data.entrySource == 'pupil'
+            && request.resource.data.pupilId == request.auth.uid
+            && request.resource.data.classId == resource.data.classId
+            && request.resource.data.subjectId == resource.data.subjectId
+            && request.resource.data.status in ['draft', 'open', 'awaitingReview']
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'teacherId', 'feedbackType', 'assessmentName', 'assessmentComponent',
+              'date', 'skill', 'score', 'maxScore', 'percentage', 'grade',
+              'strength', 'strengthHtml', 'nextStep', 'nextStepHtml',
+              'trafficLight', 'pupilNote', 'entrySource', 'verificationStatus',
+              'status', 'submissionStatus', 'autosavedAt', 'submittedAt',
+              'assessmentId', 'updatedAt'
+            ]))
+          || (ownsPupilRecord(resource.data)
+            && request.resource.data.pupilId == request.auth.uid
+            && request.resource.data.classId == resource.data.classId
+            && request.resource.data.subjectId == resource.data.subjectId
+            && request.resource.data.status in ['open', 'awaitingReview']
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'updatedAt'
+            ]));
+
+        allow delete: if isStaff(schoolId);
       }
 
       match /feedbackActions/{actionId} {

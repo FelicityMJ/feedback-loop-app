@@ -7,10 +7,14 @@ A static GitHub/Firebase school feedback platform based on the workflow in `Feed
 - Four roles: school administrator, department head, teacher and pupil.
 - School → department → subject → class structure.
 - Teacher-created classes and pupil invitation codes.
-- Assessment results, percentages, grades and target grades.
+- Pupil-created feedback records with type-driven fields for verbal feedback, prelims, tests, homework, coursework and practical work.
+- Autosaved drafts that can be continued the next day, with a visible save status.
+- Live teacher monitoring of pupil drafts through Firestore realtime updates.
+- Rich pupil notes with bold text and yellow, green, pink or blue highlighting.
+- Assessment results, percentages, detailed A1–D8 grades and target grades.
 - Pupil grade-versus-target graph.
 - Strengths, next steps and traffic-light feedback.
-- Pupil reflection, action evidence, teacher review and closed feedback loops.
+- Pupil reflection, action evidence, optional teacher review and closed feedback loops.
 - Whole-class teacher dashboard and individual pupil dashboard.
 - Department overview and multi-indicator at-risk flags.
 - Intervention records.
@@ -58,3 +62,9 @@ The transfer workflow moves the pupil account and shares a concise learner summa
 This gives a GitHub Pages address such as:
 
 `https://felicitymj.github.io/feedback-loop-app/`
+
+## Licence
+
+Copyright © 2026 Felicity Miller. All rights reserved.
+
+This is proprietary software. See the `LICENSE` file for the full terms.

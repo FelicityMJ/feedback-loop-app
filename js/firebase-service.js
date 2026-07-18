@@ -10,7 +10,7 @@ let initializeApp, getAuth, onAuthStateChanged, signInWithEmailAndPassword;
 let createUserWithEmailAndPassword, firebaseSignOut, sendPasswordResetEmail;
 let sendEmailVerification, GoogleAuthProvider, signInWithPopup, updateProfile;
 let verifyBeforeUpdateEmail, getFirestore, doc, getDoc, getDocs, setDoc;
-let addDoc, updateDoc, deleteDoc, collection, query, where, limit;
+let addDoc, updateDoc, deleteDoc, collection, query, where, limit, onSnapshot;
 let serverTimestamp, writeBatch, arrayUnion;
 
 const firebaseReady = isDemoMode ? Promise.resolve() : Promise.all([
@@ -27,7 +27,7 @@ const firebaseReady = isDemoMode ? Promise.resolve() : Promise.all([
   } = authMod);
   ({
     getFirestore, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-    collection, query, where, limit, serverTimestamp, writeBatch, arrayUnion
+    collection, query, where, limit, onSnapshot, serverTimestamp, writeBatch, arrayUnion
   } = firestoreMod);
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
@@ -36,8 +36,17 @@ const firebaseReady = isDemoMode ? Promise.resolve() : Promise.all([
 });
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
-const randomId = (prefix = "") => `${prefix}${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
-const learnerId = () => `L-${crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
+const makeUuid = () => {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+const randomId = (prefix = "") => `${prefix}${makeUuid().replaceAll("-", "").slice(0, 12)}`;
+const learnerId = () => `L-${makeUuid().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
 const asDateValue = (value) => {
   if (!value) return value;
   if (typeof value?.toDate === "function") return value.toDate().toISOString();
@@ -50,8 +59,8 @@ const normaliseDoc = (snap) => {
   );
 };
 
-const demoStorageKey = "feedbackLoopDemoStateV1";
-const demoUserKey = "feedbackLoopDemoUserV1";
+const demoStorageKey = "feedbackLoopDemoStateV2";
+const demoUserKey = "feedbackLoopDemoUserV2";
 
 function getDemoState() {
   const stored = localStorage.getItem(demoStorageKey);
@@ -63,6 +72,7 @@ function getDemoState() {
 
 function saveDemoState(state) {
   localStorage.setItem(demoStorageKey, JSON.stringify(state));
+  window.dispatchEvent(new CustomEvent("feedbackloop-demo-state-changed", { detail: clone(state) }));
 }
 
 function getDemoUser() {
@@ -102,6 +112,36 @@ export function observeAuth(callback) {
     .then(() => { unsubscribe = onAuthStateChanged(auth, callback); })
     .catch((error) => { console.error("Firebase could not start", error); callback(null); });
   return () => unsubscribe();
+}
+
+
+export function observeSchoolFeedback(profile, callback, errorCallback = console.error) {
+  if (!profile?.schoolId) return () => {};
+  if (isDemoMode) {
+    const emit = () => callback(clone(getDemoState().feedbackRecords || []));
+    const handler = () => emit();
+    window.addEventListener("feedbackloop-demo-state-changed", handler);
+    queueMicrotask(emit);
+    return () => window.removeEventListener("feedbackloop-demo-state-changed", handler);
+  }
+
+  let unsubscribe = () => {};
+  let cancelled = false;
+  firebaseReady.then(() => {
+    if (cancelled) return;
+    const base = collection(db, "schools", profile.schoolId, "feedbackRecords");
+    const ref = profile.role === "pupil"
+      ? query(base, where("pupilId", "==", profile.id))
+      : base;
+    unsubscribe = onSnapshot(ref, (snapshot) => {
+      callback(snapshot.docs.map(normaliseDoc));
+    }, errorCallback);
+  }).catch(errorCallback);
+
+  return () => {
+    cancelled = true;
+    unsubscribe();
+  };
 }
 
 export async function demoSignInAs(role) {
@@ -383,7 +423,7 @@ export async function deleteSchoolEntity(schoolId, group, id) {
 }
 
 export async function createInvite(schoolId, data) {
-  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10).toUpperCase();
+  const suffix = makeUuid().replaceAll("-", "").slice(0, 10).toUpperCase();
   const code = `${schoolId}~${suffix}`;
   const item = { id: code, schoolId, ...data, active: true, createdAt: new Date().toISOString() };
   if (isDemoMode) {

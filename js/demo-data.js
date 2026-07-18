@@ -20,10 +20,10 @@ export const demoData = {
     { id: "english", name: "English", headIds: [] }
   ],
   subjects: [
-    { id: "computing", name: "Computing Science", departmentId: "computing-business", gradeScale: "A-D" },
-    { id: "business", name: "Business Management", departmentId: "computing-business", gradeScale: "A-D" },
-    { id: "maths", name: "Mathematics", departmentId: "mathematics", gradeScale: "A-D" },
-    { id: "english", name: "English", departmentId: "english", gradeScale: "A-D" }
+    { id: "computing", name: "Computing Science", departmentId: "computing-business", gradeScale: "A1-D8" },
+    { id: "business", name: "Business Management", departmentId: "computing-business", gradeScale: "A1-D8" },
+    { id: "maths", name: "Mathematics", departmentId: "mathematics", gradeScale: "A1-D8" },
+    { id: "english", name: "English", departmentId: "english", gradeScale: "A1-D8" }
   ],
   users: [
     { id: "demo-admin", learnerId: null, displayName: "Mrs Campbell", email: "admin@northbridge.demo", role: "schoolAdmin", schoolId: DEMO_SCHOOL_ID, departmentIds: [], active: true },
@@ -40,33 +40,33 @@ export const demoData = {
     { id: "n5-business-a", name: "4A Business", subjectId: "business", departmentId: "computing-business", teacherIds: ["demo-teacher"], academicYear: "2026/27", targetQualification: "National 5", active: true }
   ],
   memberships: [
-    { id: "m1", userId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", targetGrade: "A", currentGrade: "B", active: true },
-    { id: "m2", userId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", targetGrade: "B", currentGrade: "C", active: true },
-    { id: "m3", userId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", targetGrade: "A", currentGrade: "A", active: true },
-    { id: "m4", userId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", targetGrade: "C", currentGrade: "D", active: true },
-    { id: "m5", userId: "demo-pupil", classId: "n5-business-a", subjectId: "business", targetGrade: "A", currentGrade: "A", active: true }
+    { id: "m1", userId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", targetGrade: "A2", currentGrade: "A2", active: true },
+    { id: "m2", userId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", targetGrade: "B3", currentGrade: "B4", active: true },
+    { id: "m3", userId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", targetGrade: "A1", currentGrade: "A1", active: true },
+    { id: "m4", userId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", targetGrade: "C5", currentGrade: "D8", active: true },
+    { id: "m5", userId: "demo-pupil", classId: "n5-business-a", subjectId: "business", targetGrade: "A2", currentGrade: "A2", active: true }
   ],
   assessments: [
-    { id: "a1", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", name: "Software Design Check", topic: "Software Design", score: 14, maxScore: 20, percentage: 70, grade: "B", date: daysAgo(86) },
-    { id: "a2", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", name: "Python Selection", topic: "Selection", score: 16, maxScore: 20, percentage: 80, grade: "A", date: daysAgo(60) },
-    { id: "a3", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", name: "Database Progress Check", topic: "Database", score: 15, maxScore: 25, percentage: 60, grade: "C", date: daysAgo(34) },
-    { id: "a4", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", name: "Programming Prelim", topic: "Programming", score: 37, maxScore: 50, percentage: 74, grade: "B", date: daysAgo(9) },
-    { id: "a5", pupilId: "demo-pupil", classId: "n5-business-a", subjectId: "business", name: "Marketing Test", topic: "Marketing", score: 42, maxScore: 50, percentage: 84, grade: "A", date: daysAgo(22) },
+    { id: "a1", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", name: "Software Design Check", topic: "Software Design", score: 14, maxScore: 20, percentage: 70, grade: "A2", date: daysAgo(86) },
+    { id: "a2", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", name: "Python Selection", topic: "Selection", score: 16, maxScore: 20, percentage: 80, grade: "A2", date: daysAgo(60) },
+    { id: "a3", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", name: "Database Progress Check", topic: "Database", score: 15, maxScore: 25, percentage: 60, grade: "B4", date: daysAgo(34) },
+    { id: "a4", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", name: "Programming Prelim", topic: "Programming", score: 37, maxScore: 50, percentage: 74, grade: "A2", date: daysAgo(9) },
+    { id: "a5", pupilId: "demo-pupil", classId: "n5-business-a", subjectId: "business", name: "Marketing Test", topic: "Marketing", score: 42, maxScore: 50, percentage: 84, grade: "A2", date: daysAgo(22) },
 
-    { id: "a6", pupilId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", name: "Software Design Check", topic: "Software Design", score: 11, maxScore: 20, percentage: 55, grade: "D", date: daysAgo(86) },
-    { id: "a7", pupilId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", name: "Python Selection", topic: "Selection", score: 13, maxScore: 20, percentage: 65, grade: "C", date: daysAgo(60) },
-    { id: "a8", pupilId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", name: "Database Progress Check", topic: "Database", score: 14, maxScore: 25, percentage: 56, grade: "D", date: daysAgo(34) },
-    { id: "a9", pupilId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", name: "Programming Prelim", topic: "Programming", score: 31, maxScore: 50, percentage: 62, grade: "C", date: daysAgo(9) },
+    { id: "a6", pupilId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", name: "Software Design Check", topic: "Software Design", score: 11, maxScore: 20, percentage: 55, grade: "C5", date: daysAgo(86) },
+    { id: "a7", pupilId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", name: "Python Selection", topic: "Selection", score: 13, maxScore: 20, percentage: 65, grade: "B3", date: daysAgo(60) },
+    { id: "a8", pupilId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", name: "Database Progress Check", topic: "Database", score: 14, maxScore: 25, percentage: 56, grade: "C5", date: daysAgo(34) },
+    { id: "a9", pupilId: "pupil-2", classId: "n5-computing-a", subjectId: "computing", name: "Programming Prelim", topic: "Programming", score: 31, maxScore: 50, percentage: 62, grade: "B4", date: daysAgo(9) },
 
-    { id: "a10", pupilId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", name: "Software Design Check", topic: "Software Design", score: 17, maxScore: 20, percentage: 85, grade: "A", date: daysAgo(86) },
-    { id: "a11", pupilId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", name: "Python Selection", topic: "Selection", score: 18, maxScore: 20, percentage: 90, grade: "A", date: daysAgo(60) },
-    { id: "a12", pupilId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", name: "Database Progress Check", topic: "Database", score: 21, maxScore: 25, percentage: 84, grade: "A", date: daysAgo(34) },
-    { id: "a13", pupilId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", name: "Programming Prelim", topic: "Programming", score: 44, maxScore: 50, percentage: 88, grade: "A", date: daysAgo(9) },
+    { id: "a10", pupilId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", name: "Software Design Check", topic: "Software Design", score: 17, maxScore: 20, percentage: 85, grade: "A1", date: daysAgo(86) },
+    { id: "a11", pupilId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", name: "Python Selection", topic: "Selection", score: 18, maxScore: 20, percentage: 90, grade: "A1", date: daysAgo(60) },
+    { id: "a12", pupilId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", name: "Database Progress Check", topic: "Database", score: 21, maxScore: 25, percentage: 84, grade: "A2", date: daysAgo(34) },
+    { id: "a13", pupilId: "pupil-3", classId: "n5-computing-a", subjectId: "computing", name: "Programming Prelim", topic: "Programming", score: 44, maxScore: 50, percentage: 88, grade: "A1", date: daysAgo(9) },
 
-    { id: "a14", pupilId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", name: "Software Design Check", topic: "Software Design", score: 12, maxScore: 20, percentage: 60, grade: "C", date: daysAgo(86) },
-    { id: "a15", pupilId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", name: "Python Selection", topic: "Selection", score: 11, maxScore: 20, percentage: 55, grade: "D", date: daysAgo(60) },
-    { id: "a16", pupilId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", name: "Database Progress Check", topic: "Database", score: 12, maxScore: 25, percentage: 48, grade: "D", date: daysAgo(34) },
-    { id: "a17", pupilId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", name: "Programming Prelim", topic: "Programming", score: 21, maxScore: 50, percentage: 42, grade: "No Award", date: daysAgo(9) }
+    { id: "a14", pupilId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", name: "Software Design Check", topic: "Software Design", score: 12, maxScore: 20, percentage: 60, grade: "B4", date: daysAgo(86) },
+    { id: "a15", pupilId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", name: "Python Selection", topic: "Selection", score: 11, maxScore: 20, percentage: 55, grade: "C5", date: daysAgo(60) },
+    { id: "a16", pupilId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", name: "Database Progress Check", topic: "Database", score: 12, maxScore: 25, percentage: 48, grade: "D7", date: daysAgo(34) },
+    { id: "a17", pupilId: "pupil-4", classId: "n5-computing-a", subjectId: "computing", name: "Programming Prelim", topic: "Programming", score: 21, maxScore: 50, percentage: 42, grade: "D8", date: daysAgo(9) }
   ],
   feedbackRecords: [
     { id: "f1", pupilId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", assessmentId: "a2", assessmentName: "Python Selection", date: daysAgo(60), skill: "Selection", feedbackType: "Progress Check", strength: "You selected the correct conditions and used if, elif and else accurately.", nextStep: "Explain why each condition is needed using the actual variables from the question.", trafficLight: "Green", status: "closed", teacherId: "demo-teacher", teacherNotes: "Secure practical skill." },

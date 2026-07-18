@@ -220,21 +220,35 @@ The pupil then sees only subjects attached to their class memberships.
 
 ---
 
-## Part 10 — everyday teacher workflow
+## Part 10 — everyday feedback workflow
 
-1. Open **Assessments & feedback**.
-2. Add an assessment result to build the grade graph.
-3. Add feedback with:
-   - assessment/activity;
-   - skill or topic;
-   - strength;
-   - precise next step;
-   - traffic light;
-   - optional private teacher note.
-4. The pupil opens **My feedback loops**.
-5. They explain what the feedback means and record the action they took.
-6. The teacher selects **Review action**.
-7. Approving the evidence closes the loop; returning it opens the loop again.
+Teachers do not need to type pupils' marks or feedback into the system.
+
+1. The teacher marks the work and tells the class to open **My feedback record**.
+2. Each pupil selects **New feedback record**.
+3. The pupil chooses the feedback type. The form changes automatically:
+   - **Verbal** and **Written Feedback** do not require test marks;
+   - **Prelim**, **Class Test** and **Unit Assessment** require the mark and total;
+   - homework, coursework, practical work and exam-question practice allow an optional result.
+4. For a prelim, the pupil enters the prelim name, date, paper/section, mark and total.
+5. FeedbackLoop calculates the percentage and grade using:
+   - A1: 85% and above;
+   - A2: 70–84%;
+   - B3: 65–69%;
+   - B4: 60–64%;
+   - C5: 55–59%;
+   - C6: 50–54%;
+   - D7: 45–49%;
+   - D8: 40–44%;
+   - No Award: 39% and below.
+6. The pupil writes what went well and what they must watch out for next time. They can use bold and coloured highlighting.
+7. The page displays **Unsaved changes**, **Saving…**, **Saved at…**, or **Couldn’t save**.
+8. Autosaved drafts remain available under **Continue a draft**, including on the next day.
+9. The teacher opens **Live feedback**. Pupil drafts appear and update automatically while pupils type.
+10. When a pupil selects **Finish and add to my record**, any result is added to their grade graph immediately. No teacher confirmation is required.
+11. The pupil can later add an improvement action and close the feedback loop. Teacher review remains available when staff want to use it, but it is not part of entering the original record.
+
+Publish the supplied `firestore.rules` after this update. The new rules permit pupils to autosave only their own records and allow linked staff to read the incoming drafts.
 
 ---
 
@@ -291,3 +305,9 @@ Teacher-only notes and interventions are excluded from the pupil export.
 Use only fictional test pupils until the school or local authority has approved the pilot.
 
 Complete the separate `PRIVACY-AND-PILOT-CHECKLIST.md`, including a DPIA, privacy information, retention rules, access testing and a review of the Firebase/Google terms used by the school.
+
+## Licence file
+
+Upload the supplied `LICENSE` file to the root of the GitHub repository beside
+`README.md` and `index.html`. It records that FeedbackLoop is proprietary
+software and is not being released under an open-source licence.

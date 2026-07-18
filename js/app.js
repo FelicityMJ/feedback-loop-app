@@ -646,7 +646,7 @@ function renderAdminRequests() {
 }
 
 function renderModal() {
-  return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" aria-label="${e(state.modal.title)}" onclick="event.stopPropagation()"><div class="modal-head"><h3>${e(state.modal.title)}</h3><button class="icon-btn" data-action="close-modal">×</button></div><div class="modal-body">${state.modal.body}</div></section></div>`;
+  return `<div class="modal-backdrop" data-modal-backdrop><section class="modal" role="dialog" aria-modal="true" aria-label="${e(state.modal.title)}"><div class="modal-head"><h3>${e(state.modal.title)}</h3><button class="icon-btn" data-action="close-modal" type="button">×</button></div><div class="modal-body">${state.modal.body}</div></section></div>`;
 }
 
 function openModal(title, body) {
@@ -1191,6 +1191,9 @@ app.addEventListener('pointerdown', (event) => {
 });
 
 app.addEventListener("click", async (event) => {
+  const modalBackdrop = event.target.closest("[data-modal-backdrop]");
+  if (modalBackdrop && event.target === modalBackdrop) { closeModal(); return; }
+
   const authTab = event.target.closest("[data-auth-tab]");
   if (authTab) { state.authTab = authTab.dataset.authTab; renderAuth(); return; }
   const demo = event.target.closest("[data-demo-role]");

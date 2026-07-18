@@ -1,12 +1,12 @@
 // Replace the placeholder values with the Firebase web-app configuration
 // copied from Firebase Console > Project settings > Your apps.
 export const firebaseConfig = {
-  apiKey: "PASTE_YOUR_API_KEY_HERE",
-  authDomain: "PASTE_YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "PASTE_YOUR_PROJECT_ID",
-  storageBucket: "PASTE_YOUR_PROJECT_ID.firebasestorage.app",
-  messagingSenderId: "PASTE_YOUR_MESSAGING_SENDER_ID",
-  appId: "PASTE_YOUR_APP_ID"
+  apiKey: "AIzaSyCAgWzhPjGT2PxyvogGS9SZ-3J4KxfWIRQ",
+  authDomain: "feedback-loop-school.firebaseapp.com",
+  projectId: "feedback-loop-school",
+  storageBucket: "feedback-loop-school.firebasestorage.app",
+  messagingSenderId: "211193320459",
+  appId: "1:211193320459:web:8d3d01b99ae29e0131630e"
 };
 
 export const appSettings = {

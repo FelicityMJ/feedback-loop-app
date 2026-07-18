@@ -6,7 +6,8 @@ A static GitHub/Firebase school feedback platform based on the workflow in `Feed
 
 - Four roles: school administrator, department head, teacher and pupil.
 - School → department → subject → class structure.
-- Teacher-created classes and pupil invitation codes.
+- Role-scoped reusable codes: administrators create department-head codes, department heads create teacher department codes, and teachers create pupil class codes.
+- Department heads can assign joined teachers to classes.
 - Pupil-created feedback records with type-driven fields for verbal feedback, prelims, tests, homework, coursework and practical work.
 - Autosaved drafts that can be continued the next day, with a visible save status.
 - Live teacher monitoring of pupil drafts through Firestore realtime updates.

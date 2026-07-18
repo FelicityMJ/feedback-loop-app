@@ -44,6 +44,19 @@ service cloud.firestore {
       return isCurrentSchool(schoolId) && me().role == 'teacher';
     }
 
+    function leadsDepartment(schoolId, departmentId) {
+      return isDepartmentHead(schoolId)
+        && me().departmentIds is list
+        && me().departmentIds.hasAny([departmentId]);
+    }
+
+    function teachesClass(schoolId, classId) {
+      return isTeacher(schoolId)
+        && exists(/databases/$(database)/documents/schools/$(schoolId)/classes/$(classId))
+        && get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(classId)).data.teacherIds is list
+        && get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(classId)).data.teacherIds.hasAny([request.auth.uid]);
+    }
+
     function isStaff(schoolId) {
       return isSchoolAdmin(schoolId) || isDepartmentHead(schoolId) || isTeacher(schoolId);
     }
@@ -59,6 +72,37 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.role == role;
     }
 
+    function profileMatchesInvite(schoolId, inviteCode) {
+      return validInvite(schoolId, inviteCode, request.resource.data.role)
+        && request.resource.data.departmentIds is list
+        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.departmentIds is list
+        && request.resource.data.departmentIds == get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.departmentIds;
+    }
+
+    // Registration creates the user profile and any class membership in one
+    // Firestore batch. getAfter() lets the membership rule validate the new
+    // profile that will exist if the whole batch succeeds.
+    function joiningProfileMatchesInvite(schoolId, inviteCode) {
+      return existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.schoolId == schoolId
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.inviteCode == inviteCode
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'pupil'
+        && validInvite(
+          schoolId,
+          inviteCode,
+          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        );
+    }
+
+    function inviteCoversClass(schoolId, inviteCode, classId, subjectId) {
+      return inviteCode is string
+        && exists(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode))
+        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.active == true
+        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.classIds is list
+        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.classIds.hasAny([classId])
+        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.subjectId == subjectId;
+    }
+
     function approvedTransfer(transferId, pupilId, toSchoolId) {
       return transferId is string
         && exists(/databases/$(database)/documents/transferRequests/$(transferId))
@@ -72,10 +116,9 @@ service cloud.firestore {
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.schoolId is string
         && request.resource.data.role in ['schoolAdmin', 'departmentHead', 'teacher', 'pupil']
-        && validInvite(
+        && profileMatchesInvite(
           request.resource.data.schoolId,
-          request.resource.data.inviteCode,
-          request.resource.data.role
+          request.resource.data.inviteCode
         );
 
       allow read: if isSelf(uid)
@@ -134,7 +177,13 @@ service cloud.firestore {
           || (
             signedIn()
             && request.resource.data.userId == request.auth.uid
-            && validInvite(schoolId, request.resource.data.inviteCode, 'pupil')
+            && joiningProfileMatchesInvite(schoolId, request.resource.data.inviteCode)
+            && inviteCoversClass(
+              schoolId,
+              request.resource.data.inviteCode,
+              request.resource.data.classId,
+              request.resource.data.subjectId
+            )
           )
           || (
             signedIn()
@@ -233,14 +282,57 @@ service cloud.firestore {
 
       match /invites/{inviteCode} {
         // A long random code can be checked directly during registration.
-        // Listing all invitation codes is restricted to the school administrator.
+        // Creators can list only their own codes; the school administrator can
+        // see all codes in the school.
         allow get: if true;
-        allow list: if isSchoolAdmin(schoolId);
-        allow create: if isSchoolAdmin(schoolId)
+        allow list: if isSchoolAdmin(schoolId)
+          || (hasUser() && resource.data.createdBy == request.auth.uid);
+
+        // School administrators create department-head codes.
+        // Department heads create teacher codes for departments they lead.
+        // Teachers create pupil codes only for classes they teach.
+        allow create: if (
+          isSchoolAdmin(schoolId)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.role == 'departmentHead'
+          && request.resource.data.scopeType == 'department'
+          && request.resource.data.departmentIds is list
+          && request.resource.data.departmentIds.size() == 1
+          && exists(/databases/$(database)/documents/schools/$(schoolId)/departments/$(request.resource.data.departmentIds[0]))
+          && request.resource.data.classIds is list
+          && request.resource.data.classIds.size() == 0
+        ) || (
+          isDepartmentHead(schoolId)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.role == 'teacher'
+          && request.resource.data.scopeType == 'department'
+          && request.resource.data.departmentIds is list
+          && request.resource.data.departmentIds.size() == 1
+          && me().departmentIds.hasAny(request.resource.data.departmentIds)
+          && exists(/databases/$(database)/documents/schools/$(schoolId)/departments/$(request.resource.data.departmentIds[0]))
+          && request.resource.data.classIds is list
+          && request.resource.data.classIds.size() == 0
+        ) || (
+          isTeacher(schoolId)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.role == 'pupil'
+          && request.resource.data.scopeType == 'class'
+          && request.resource.data.classIds is list
+          && request.resource.data.classIds.size() == 1
+          && teachesClass(schoolId, request.resource.data.classIds[0])
+          && request.resource.data.departmentIds is list
+          && request.resource.data.departmentIds.size() == 1
+          && request.resource.data.departmentIds[0] == get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0])).data.departmentId
+          && request.resource.data.subjectId == get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0])).data.subjectId
+        );
+
+        allow update: if isSchoolAdmin(schoolId)
           || (isStaff(schoolId)
-            && request.resource.data.role == 'pupil'
-            && request.resource.data.createdBy == request.auth.uid);
-        allow update, delete: if isSchoolAdmin(schoolId)
+            && resource.data.createdBy == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'active', 'label', 'updatedAt'
+            ]));
+        allow delete: if isSchoolAdmin(schoolId)
           || (isStaff(schoolId) && resource.data.createdBy == request.auth.uid);
       }
 

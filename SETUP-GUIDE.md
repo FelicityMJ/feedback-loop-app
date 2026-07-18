@@ -176,47 +176,49 @@ You should now see the school-administrator dashboard.
 
 ---
 
-## Part 7 — set up the school inside the app
+## Part 7 — create the department-head account
 
 Sign in as the school administrator and work in this order:
 
 1. Open **School setup**.
 2. Add the departments.
 3. Add the subjects and connect each subject to its department.
-4. Add classes.
-5. Create staff invitation codes.
-6. Give each teacher or department head only their own code.
+4. Select **Create department-head code**.
+5. Choose the correct department and generate the reusable code.
+6. Give that code privately to the person who leads the department.
+7. The department head opens FeedbackLoop, chooses **Join a school**, and creates their account using that code.
 
-For a department head invitation, select the correct department before generating the code.
-
-For a teacher invitation, a department can be attached now; classes can be created or assigned after the teacher joins.
-
----
-
-## Part 8 — add teachers and classes
-
-1. The teacher opens the same site.
-2. They choose **Join a school**.
-3. They enter their name, school email, password and invitation code.
-4. Their role and school come from the invitation code; they cannot choose a higher role themselves.
-5. The teacher can create classes.
-6. From **My classes**, choose **Pupil code** to create a pupil invitation code for a class.
-7. Give the code only to pupils in that class.
-
-A school administrator can also create pupil codes from **School setup**.
+The code decides that the new account is a department-head account and links it to the chosen department. The user does not select their own role.
 
 ---
 
-## Part 9 — add pupils
+## Part 8 — add teachers through a department code
 
-1. The pupil opens the site.
-2. They choose **Join a school**.
-3. They enter their school email and the class invitation code.
-4. Firebase creates a permanent user UID.
-5. FeedbackLoop creates a separate `learnerId` such as `L-2F4A9D7C`.
-6. The learner ID remains stable if their email or school later changes.
+1. The department head signs in.
+2. On **Department overview**, select **Teacher department code**.
+3. Choose their department and generate a reusable department code.
+4. Share that code privately with the teachers joining that department.
+5. Each teacher opens FeedbackLoop and chooses **Join a school**.
+6. They enter their name, email, password and the department code.
+7. FeedbackLoop creates a teacher profile linked to that department.
+8. The department head opens **Classes** and uses **Assign teacher** to link the teacher to the appropriate classes.
 
-The pupil then sees only subjects attached to their class memberships.
+The department code does not automatically put every teacher into every class. Class assignment remains under the department head's control.
+
+---
+
+## Part 9 — add pupils through a class code
+
+1. Once assigned to a class, the teacher opens **My classes**.
+2. They select **Pupil code** for that class.
+3. FeedbackLoop generates a reusable class code.
+4. The teacher shares that code only with pupils in the class.
+5. Each pupil opens the site and chooses **Join a school**.
+6. They enter their name, email, password and the class code.
+7. Firebase creates a permanent user UID and FeedbackLoop creates a separate `learnerId` such as `L-2F4A9D7C`.
+8. The pupil is automatically added to that class and sees its subject on their dashboard.
+
+The teacher can disable an old class code and generate a replacement at any time. The pupil's learner ID remains stable if their email or school later changes.
 
 ---
 

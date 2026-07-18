@@ -362,3 +362,13 @@ tbody tr:hover { background: #fafbff; }
   .feedback-editor-actions { justify-content: stretch; }
   .feedback-editor-actions .btn { flex: 1; }
 }
+
+.code-display {
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px dashed var(--border, #cfd6ee);
+  border-radius: 14px;
+  background: #f7f8ff;
+  overflow-wrap: anywhere;
+  font-size: 1.05rem;
+}

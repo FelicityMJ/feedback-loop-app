@@ -333,6 +333,28 @@ function latestAssessment(pupilId, subjectId = null) {
   return sortByDateDesc((state.data?.assessments || []).filter((a) => a.pupilId === pupilId && (!subjectId || a.subjectId === subjectId) && officialAssessment(a)))[0] || null;
 }
 
+function assessmentAverage(pupilId, { subjectId = null, classId = null } = {}) {
+  const items = (state.data?.assessments || []).filter((assessment) => {
+    const percentage = Number(assessment.percentage);
+    return assessment.pupilId === pupilId
+      && (!subjectId || assessment.subjectId === subjectId)
+      && (!classId || assessment.classId === classId)
+      && officialAssessment(assessment)
+      && Number.isFinite(percentage);
+  });
+  if (!items.length) return { items, count: 0, percentage: null, grade: "—" };
+  const percentage = items.reduce((total, assessment) => total + Number(assessment.percentage), 0) / items.length;
+  return { items, count: items.length, percentage, grade: gradeFromPercentage(percentage) };
+}
+
+function targetProgressText(average, targetGrade) {
+  if (!average?.count || !targetGrade) return "Add more results to compare with the target";
+  const gap = gradeValue(targetGrade) - gradeValue(average.grade);
+  if (gap <= 0) return "On or above target";
+  if (gap === 1) return "Close to target — one grade band away";
+  return `${gap} grade bands below target`;
+}
+
 function openFeedbackCount(pupilId, subjectId = null) {
   return (state.data?.feedbackRecords || []).filter((f) => f.pupilId === pupilId && (!subjectId || f.subjectId === subjectId) && f.status !== "closed" && f.status !== "draft").length;
 }
@@ -346,28 +368,50 @@ function actionForFeedback(feedbackId) {
 }
 
 function atRiskInfo(pupilId, classId = null) {
-  const memberships = (state.data?.memberships || []).filter((m) => m.userId === pupilId && (!classId || m.classId === classId));
-  const assessments = sortByDateDesc((state.data?.assessments || []).filter((a) => a.pupilId === pupilId && (!classId || a.classId === classId)));
-  const feedback = (state.data?.feedbackRecords || []).filter((f) => f.pupilId === pupilId && (!classId || f.classId === classId) && f.status !== "draft");
-  const interventions = (state.data?.interventions || []).filter((i) => i.pupilId === pupilId && i.status !== "Closed");
+  const memberships = (state.data?.memberships || []).filter((membership) => membership.userId === pupilId
+    && membership.active !== false
+    && (!classId || membership.classId === classId));
+  const assessments = sortByDateDesc((state.data?.assessments || []).filter((assessment) => assessment.pupilId === pupilId
+    && (!classId || assessment.classId === classId)
+    && officialAssessment(assessment)));
+  const feedback = (state.data?.feedbackRecords || []).filter((record) => record.pupilId === pupilId
+    && (!classId || record.classId === classId)
+    && record.status !== "draft");
+  const interventions = (state.data?.interventions || []).filter((intervention) => intervention.pupilId === pupilId && intervention.status !== "Closed");
   let score = 0;
   const reasons = [];
 
-  const membership = memberships[0];
-  const latest = assessments[0];
-  if (membership?.targetGrade && latest?.grade && gradeValue(latest.grade) < gradeValue(membership.targetGrade)) {
-    score += 2;
-    reasons.push("below target");
+  const performanceOptions = memberships.map((membership) => {
+    const average = assessmentAverage(pupilId, { classId: membership.classId, subjectId: membership.subjectId });
+    const targetGrade = membership.targetGrade || "";
+    const gap = average.count && targetGrade ? Math.max(0, gradeValue(targetGrade) - gradeValue(average.grade)) : 0;
+    return { membership, average, targetGrade, gap };
+  }).sort((a, b) => b.gap - a.gap || b.average.count - a.average.count);
+
+  const performance = performanceOptions[0] || {
+    membership: memberships[0] || {},
+    average: assessmentAverage(pupilId),
+    targetGrade: memberships[0]?.targetGrade || "",
+    gap: 0
+  };
+
+  // One grade band below target is treated as close to target rather than an at-risk flag.
+  // Two or more grade bands below target triggers a performance concern.
+  const belowTarget = performance.gap >= 2;
+  if (belowTarget) {
+    score += performance.gap >= 4 ? 4 : 2;
+    reasons.push(`${performance.gap} grade bands below target on average`);
   }
+
   if (assessments.length >= 3) {
-    const recent = assessments.slice(0, 3).map((a) => gradeValue(a.grade));
-    if (recent[0] < recent[1] && recent[1] <= recent[2]) {
+    const recent = assessments.slice(0, 3).map((assessment) => Number(assessment.percentage));
+    if (recent.every(Number.isFinite) && recent[0] < recent[1] && recent[1] <= recent[2]) {
       score += 2;
       reasons.push("results declining");
     }
   }
-  const unresolved = feedback.filter((f) => f.status !== "closed").length;
-  const red = feedback.filter((f) => String(f.trafficLight).toLowerCase() === "red").length;
+  const unresolved = feedback.filter((record) => record.status !== "closed").length;
+  const red = feedback.filter((record) => String(record.trafficLight).toLowerCase() === "red").length;
   if (unresolved >= 2) { score += 1; reasons.push(`${unresolved} open feedback loops`); }
   if (red >= 2) { score += 2; reasons.push("repeated red feedback"); }
   if (interventions.length) { score += 2; reasons.push("active intervention"); }
@@ -376,8 +420,13 @@ function atRiskInfo(pupilId, classId = null) {
     score,
     level: score >= 5 ? "High" : score >= 2 ? "Medium" : "Low",
     reasons,
-    latestGrade: latest?.grade || membership?.currentGrade || "—",
-    targetGrade: membership?.targetGrade || "—"
+    belowTarget,
+    gradeGap: performance.gap,
+    averageGrade: performance.average.grade || "—",
+    averagePercentage: performance.average.percentage,
+    latestGrade: performance.average.grade || "—",
+    targetGrade: performance.targetGrade || "—",
+    subjectId: performance.membership?.subjectId || null
   };
 }
 
@@ -511,16 +560,16 @@ function renderPupilOverview() {
   const assessments = (state.data.assessments || []).filter((a) => a.pupilId === state.profile.id && a.subjectId === subjectId && officialAssessment(a));
   const feedback = sortByDateDesc((state.data.feedbackRecords || []).filter((f) => f.pupilId === state.profile.id && f.subjectId === subjectId && f.status !== "draft"));
   const membership = pupilMembership(state.profile.id, subjectId) || {};
-  const latest = sortByDateDesc(assessments)[0];
+  const average = assessmentAverage(state.profile.id, { subjectId });
   const open = feedback.filter((f) => f.status !== "closed");
   const closed = feedback.filter((f) => f.status === "closed");
   const subject = getSubjectName(subjectId);
 
   return `${pupilPageHead("My progress", "See how your results are moving, then turn feedback into a clear next action.")}
-    <section class="hero"><div><h2>${open.length ? `You have ${open.length} feedback loop${open.length === 1 ? "" : "s"} ready to close.` : "Every feedback loop is closed."}</h2><p>${open.length ? `Start with the oldest open action in ${subject}. A small correction now can prevent the same mistake appearing in your next assessment.` : `Your improvement record in ${subject} is up to date. Revisit the mistake bank before your next assessment.`}</p></div><div class="hero-stat"><strong>${latest?.grade || membership.currentGrade || "—"}</strong><span>Current grade · Target ${membership.targetGrade || "not set"}</span></div></section>
+    <section class="hero"><div><h2>${open.length ? `You have ${open.length} feedback loop${open.length === 1 ? "" : "s"} ready to close.` : "Every feedback loop is closed."}</h2><p>${open.length ? `Start with the oldest open action in ${subject}. A small correction now can prevent the same mistake appearing in your next assessment.` : `Your improvement record in ${subject} is up to date. Revisit the mistake bank before your next assessment.`}</p></div><div class="hero-stat"><strong>${average.grade}</strong><span>Average grade · Target ${membership.targetGrade || "not set"}</span></div></section>
     <div class="grid grid-4">
-      ${kpi("↗", "Latest result", latest ? formatPercent(latest.percentage) : "—", latest?.name || "No assessment yet")}
-      ${kpi("◎", "Target grade", membership.targetGrade || "—", latest?.grade && membership.targetGrade && gradeValue(latest.grade) >= gradeValue(membership.targetGrade) ? "On or above target" : "Keep moving towards it")}
+      ${kpi("↗", "Average result", average.count ? formatPercent(average.percentage) : "—", average.count ? `${average.count} completed assessment${average.count === 1 ? "" : "s"}` : "No assessment yet")}
+      ${kpi("◎", "Target grade", membership.targetGrade || "—", targetProgressText(average, membership.targetGrade))}
       ${kpi("✓", "Loops closed", closed.length, "Improvements kept in your record")}
       ${kpi("✎", "Still to act on", open.length, open.length ? "Choose one next step today" : "All caught up")}
     </div>
@@ -609,11 +658,11 @@ function classAverage(classId) {
 
 function classSnapshotTable(cls) {
   const pupils = pupilsForClass(cls.id);
-  return `<div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Latest</th><th>Target</th><th>Open loops</th><th>Risk</th><th></th></tr></thead><tbody>${pupils.map((p) => {
-    const membership = pupilMembership(p.id, cls.subjectId) || {};
-    const latest = latestAssessment(p.id, cls.subjectId);
-    const risk = atRiskInfo(p.id, cls.id);
-    return `<tr><td><button class="table-link" data-action="open-pupil" data-id="${p.id}">${e(p.displayName)}</button><div class="small muted">${e(p.email)}</div></td><td>${latest ? `${badge(latest.grade)} ${formatPercent(latest.percentage)}` : "—"}</td><td>${badge(membership.targetGrade || "Not set")}</td><td>${openFeedbackCount(p.id, cls.subjectId)}</td><td>${badge(risk.level)}<div class="small muted">${e(risk.reasons.join(", "))}</div></td><td><button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${p.id}">Dashboard</button></td></tr>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Average</th><th>Target</th><th>Open loops</th><th>Risk</th><th></th></tr></thead><tbody>${pupils.map((pupil) => {
+    const membership = pupilMembership(pupil.id, cls.subjectId) || {};
+    const average = assessmentAverage(pupil.id, { classId: cls.id, subjectId: cls.subjectId });
+    const risk = atRiskInfo(pupil.id, cls.id);
+    return `<tr><td><button class="table-link" data-action="open-pupil" data-id="${pupil.id}">${e(pupil.displayName)}</button><div class="small muted">${e(pupil.email)}</div></td><td>${average.count ? `${badge(average.grade)} ${formatPercent(average.percentage)}` : "—"}</td><td>${badge(membership.targetGrade || "Not set")}</td><td>${openFeedbackCount(pupil.id, cls.subjectId)}</td><td>${badge(risk.level)}<div class="small muted">${e(risk.reasons.join(", "))}</div></td><td><button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${pupil.id}">Dashboard</button></td></tr>`;
   }).join("") || `<tr><td colspan="6" class="empty">No pupils linked to this class.</td></tr>`}</tbody></table></div>`;
 }
 
@@ -663,10 +712,11 @@ function renderPupilDirectory() {
   const classes = classesVisibleToProfile();
   const pupilIds = unique(classes.flatMap((c) => pupilsForClass(c.id).map((p) => p.id)));
   const pupils = state.data.users.filter((u) => pupilIds.includes(u.id));
-  return `<div class="page-head"><div><h1>Pupil dashboards</h1><p>Open one pupil to see grade progress, feedback history, recurring misconceptions and active support.</p></div></div><section class="card"><div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Classes</th><th>Latest grade</th><th>Open loops</th><th>Risk</th><th></th></tr></thead><tbody>${pupils.map((p) => {
+  return `<div class="page-head"><div><h1>Pupil dashboards</h1><p>Open one pupil to see average attainment, grade progress, feedback history, recurring misconceptions and active support.</p></div></div><section class="card"><div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Classes</th><th>Average grade</th><th>Open loops</th><th>Risk</th><th></th></tr></thead><tbody>${pupils.map((p) => {
     const pupilClasses = classes.filter((c) => pupilsForClass(c.id).some((x) => x.id === p.id));
     const risk = atRiskInfo(p.id);
-    return `<tr><td><strong>${e(p.displayName)}</strong><div class="small muted">${e(p.email)}</div></td><td>${e(pupilClasses.map((c) => c.name).join(", "))}</td><td>${badge(latestAssessment(p.id)?.grade || "—")}</td><td>${openFeedbackCount(p.id)}</td><td>${badge(risk.level)}<div class="small muted">${e(risk.reasons.join(", "))}</div></td><td><button class="btn btn-primary btn-sm" data-action="open-pupil" data-id="${p.id}">Open dashboard</button></td></tr>`;
+    const average = assessmentAverage(p.id);
+    return `<tr><td><strong>${e(p.displayName)}</strong><div class="small muted">${e(p.email)}</div></td><td>${e(pupilClasses.map((c) => c.name).join(", "))}</td><td>${average.count ? `${badge(average.grade)} ${formatPercent(average.percentage)}` : "—"}</td><td>${openFeedbackCount(p.id)}</td><td>${badge(risk.level)}<div class="small muted">${e(risk.reasons.join(", "))}</div></td><td><button class="btn btn-primary btn-sm" data-action="open-pupil" data-id="${p.id}">Open dashboard</button></td></tr>`;
   }).join("") || `<tr><td colspan="6" class="empty">No pupils in your linked classes.</td></tr>`}</tbody></table></div></section>`;
 }
 
@@ -689,13 +739,13 @@ function renderHeadOverview() {
   const open = (state.data.feedbackRecords || []).filter((f) => pupilIds.includes(f.pupilId) && f.status !== "closed" && f.status !== "draft").length;
   return `<div class="page-head"><div><h1>Department overview</h1><p>Compare classes, identify recurring weaknesses and make sure intervention is based on more than a single low mark.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="create-invite">Teacher department code</button></div></div>
     <div class="grid grid-4">${kpi("▤", "Linked classes", classes.length)}${kpi("♟", "Pupils", pupilIds.length)}${kpi("✎", "Open feedback loops", open)}${kpi("⚑", "High-risk pupils", high.length)}</div>
-    <div class="grid grid-2" style="margin-top:18px"><section class="card"><div class="card-head"><div><h3>Class tracking</h3><p>Average attainment and pupils below target.</p></div></div><div class="card-body">${classes.map((c) => { const pupils=pupilsForClass(c.id); const below=pupils.filter(p=>atRiskInfo(p.id,c.id).reasons.includes("below target")).length; return `<div class="progress-row"><span>${e(c.name)}</span><div class="progress-track"><div class="progress-bar" style="width:${classAverage(c.id)}%"></div></div><strong>${classAverage(c.id)}%</strong><div class="small muted" style="grid-column:2/4">${below} below target · ${pupils.length} pupils</div></div>`; }).join("") || `<div class="empty">No linked classes.</div>`}</div></section><section class="card"><div class="card-head"><div><h3>Common misconceptions</h3><p>Feedback themes across the department.</p></div></div><div class="card-body">${miniBarSvg(skillCountsForClasses(classes), "count", "skill")}</div></section></div>
+    <div class="grid grid-2" style="margin-top:18px"><section class="card"><div class="card-head"><div><h3>Class tracking</h3><p>Average attainment and pupils below target.</p></div></div><div class="card-body">${classes.map((c) => { const pupils=pupilsForClass(c.id); const below=pupils.filter(p=>atRiskInfo(p.id,c.id).belowTarget).length; return `<div class="progress-row"><span>${e(c.name)}</span><div class="progress-track"><div class="progress-bar" style="width:${classAverage(c.id)}%"></div></div><strong>${classAverage(c.id)}%</strong><div class="small muted" style="grid-column:2/4">${below} below target · ${pupils.length} pupils</div></div>`; }).join("") || `<div class="empty">No linked classes.</div>`}</div></section><section class="card"><div class="card-head"><div><h3>Common misconceptions</h3><p>Feedback themes across the department.</p></div></div><div class="card-body">${miniBarSvg(skillCountsForClasses(classes), "count", "skill")}</div></section></div>
     <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Teacher department codes</h3><p>Share a department code with teachers joining your department. It can be reused until you disable it.</p></div><button class="btn btn-primary btn-sm" data-action="create-invite">Create code</button></div>${inviteCodeTable((state.data.invites || []).filter((i) => i.role === "teacher"))}</section>
     <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Pupils requiring review</h3><p>High and medium indicators are surfaced for professional judgement.</p></div><button class="btn btn-ghost btn-sm" data-route="at-risk">View full list</button></div>${riskTable(risks.filter((r) => r.level !== "Low").slice(0,8))}</section>`;
 }
 
 function riskTable(risks) {
-  return `<div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Latest</th><th>Target</th><th>Indicators</th><th>Risk</th><th></th></tr></thead><tbody>${risks.map((r) => `<tr><td><strong>${e(r.pupil?.displayName)}</strong></td><td>${badge(r.latestGrade)}</td><td>${badge(r.targetGrade)}</td><td>${e(r.reasons.join(", ") || "No current concern")}</td><td>${badge(r.level)}</td><td><button class="btn btn-primary btn-sm" data-action="open-pupil" data-id="${r.pupil?.id}">Dashboard</button></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No pupils currently flagged.</td></tr>`}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Average</th><th>Target</th><th>Indicators</th><th>Risk</th><th></th></tr></thead><tbody>${risks.map((risk) => `<tr><td><strong>${e(risk.pupil?.displayName)}</strong></td><td>${badge(risk.averageGrade)}${risk.averagePercentage !== null && risk.averagePercentage !== undefined ? ` <span class="small muted">${formatPercent(risk.averagePercentage)}</span>` : ""}</td><td>${badge(risk.targetGrade)}</td><td>${e(risk.reasons.join(", ") || "No current concern")}</td><td>${badge(risk.level)}</td><td><button class="btn btn-primary btn-sm" data-action="open-pupil" data-id="${risk.pupil?.id}">Dashboard</button></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No pupils currently flagged.</td></tr>`}</tbody></table></div>`;
 }
 
 function renderHeadClasses() {
@@ -707,7 +757,7 @@ function renderAtRisk() {
   const classes = headClasses();
   const pupilIds = unique(classes.flatMap((c) => pupilsForClass(c.id).map((p) => p.id)));
   const risks = pupilIds.map((id) => ({ pupil: byId(state.data.users, id), ...atRiskInfo(id) })).sort((a,b)=>b.score-a.score);
-  return `<div class="page-head"><div><h1>At-risk pupils</h1><p>The app combines below-target performance, declining results, unresolved feedback, repeated red feedback and active interventions.</p></div></div><div class="alert alert-info" style="margin-bottom:18px">The indicator suggests who needs a closer look. It does not automatically label a pupil or replace teacher judgement.</div><section class="card">${riskTable(risks)}</section>`;
+  return `<div class="page-head"><div><h1>At-risk pupils</h1><p>The app compares each pupil’s average grade with their target, while also considering declining results, unresolved feedback, repeated red feedback and active interventions.</p></div></div><div class="alert alert-info" style="margin-bottom:18px">A pupil is not flagged for being only one grade band below target. A gap of two or more grade bands contributes to the indicator, alongside other evidence. Teacher judgement remains essential.</div><section class="card">${riskTable(risks)}</section>`;
 }
 
 function renderAdminRoute() {
@@ -1102,14 +1152,20 @@ function modalViewFeedback(feedbackId) {
 }
 
 function modalPupilDashboard(pupilId) {
-  const pupil = byId(state.data.users,pupilId);
-  const memberships = state.data.memberships.filter(m=>m.userId===pupilId);
-  const subjectIds = unique(memberships.map(m=>m.subjectId));
-  const assessments = sortByDateDesc(state.data.assessments.filter(a=>a.pupilId===pupilId));
-  const feedback = sortByDateDesc(state.data.feedbackRecords.filter(f=>f.pupilId===pupilId));
+  const pupil = byId(state.data.users, pupilId);
+  const memberships = state.data.memberships.filter((membership) => membership.userId === pupilId && membership.active !== false);
+  const subjectIds = unique(memberships.map((membership) => membership.subjectId));
+  const assessments = sortByDateDesc(state.data.assessments.filter((assessment) => assessment.pupilId === pupilId && officialAssessment(assessment)));
+  const feedback = sortByDateDesc(state.data.feedbackRecords.filter((record) => record.pupilId === pupilId));
   const risk = atRiskInfo(pupilId);
-  const recurring = skillCountsForPupil(pupilId).filter(x=>x.count>1);
-  openModal(`${pupil.displayName} — pupil dashboard`, `<div class="grid grid-4">${kpi("↗","Latest",assessments[0]?.grade||"—")}${kpi("◎","Target",memberships[0]?.targetGrade||"—")}${kpi("✎","Open loops",openFeedbackCount(pupilId))}${kpi("⚑","Risk",risk.level)}</div><div class="alert ${risk.level==="High"?"alert-danger":risk.level==="Medium"?"alert-warning":"alert-success"}" style="margin-top:16px">${e(risk.reasons.join(", ")||"No current risk indicators.")}</div>${subjectIds.map(subjectId=>{const m=memberships.find(x=>x.subjectId===subjectId)||{};const list=state.data.assessments.filter(a=>a.pupilId===pupilId&&a.subjectId===subjectId);return `<section style="margin-top:20px"><h3>${e(getSubjectName(subjectId))}</h3><div class="chart-wrap">${gradeChartSvg(list,m.targetGrade)}</div></section>`}).join("")}<div class="grid grid-2"><section><h3>Recurring themes</h3>${recurring.length?miniBarSvg(recurring,"count","skill"):`<p class="muted">No repeated feedback theme yet.</p>`}</section><section><h3>Current feedback</h3><div class="timeline">${feedback.slice(0,5).map(feedbackTimelineItem).join("")}</div></section></div><div class="form-actions"><button class="btn btn-ghost" data-action="set-target" data-id="${pupilId}">Set target grade</button><button class="btn btn-secondary" data-action="add-intervention" data-id="${pupilId}">Add intervention</button></div>`);
+  const recurring = skillCountsForPupil(pupilId).filter((item) => item.count > 1);
+  const overallAverage = assessmentAverage(pupilId);
+  openModal(`${pupil.displayName} — pupil dashboard`, `<div class="grid grid-4">${kpi("↗", "Average", overallAverage.grade, overallAverage.count ? formatPercent(overallAverage.percentage) : "No results")}${kpi("◎", "Target", risk.targetGrade || memberships[0]?.targetGrade || "—")}${kpi("✎", "Open loops", openFeedbackCount(pupilId))}${kpi("⚑", "Risk", risk.level)}</div><div class="alert ${risk.level === "High" ? "alert-danger" : risk.level === "Medium" ? "alert-warning" : "alert-success"}" style="margin-top:16px">${e(risk.reasons.join(", ") || "No current risk indicators. One grade band below target is treated as close to target.")}</div>${subjectIds.map((subjectId) => {
+    const membership = memberships.find((item) => item.subjectId === subjectId) || {};
+    const list = state.data.assessments.filter((assessment) => assessment.pupilId === pupilId && assessment.subjectId === subjectId && officialAssessment(assessment));
+    const average = assessmentAverage(pupilId, { subjectId });
+    return `<section style="margin-top:20px"><div class="card-head"><div><h3>${e(getSubjectName(subjectId))}</h3><p>Average ${average.count ? `${formatPercent(average.percentage)} · ${e(average.grade)}` : "not yet available"}</p></div>${badge(`Target ${membership.targetGrade || "—"}`)}</div><div class="chart-wrap">${gradeChartSvg(list, membership.targetGrade)}</div></section>`;
+  }).join("")}<div class="grid grid-2"><section><h3>Recurring themes</h3>${recurring.length ? miniBarSvg(recurring, "count", "skill") : `<p class="muted">No repeated feedback theme yet.</p>`}</section><section><h3>Current feedback</h3><div class="timeline">${feedback.slice(0, 5).map(feedbackTimelineItem).join("")}</div></section></div><div class="form-actions"><button class="btn btn-ghost" data-action="set-target" data-id="${pupilId}">Set target grade</button><button class="btn btn-secondary" data-action="add-intervention" data-id="${pupilId}">Add intervention</button></div>`);
 }
 
 function skillCountsForPupil(pupilId) {
@@ -1144,7 +1200,7 @@ function modalTransfer() {
 
 function buildTransferSummary() {
   const subjects=pupilSubjects();
-  return subjects.map(s=>{const m=pupilMembership(state.profile.id,s.id)||{};const latest=latestAssessment(state.profile.id,s.id);return `${s.name}: latest ${latest?.grade||"not recorded"}, target ${m.targetGrade||"not set"}, ${openFeedbackCount(state.profile.id,s.id)} open feedback loop(s).`;}).join("\n");
+  return subjects.map((subject) => { const membership = pupilMembership(state.profile.id, subject.id) || {}; const average = assessmentAverage(state.profile.id, { subjectId: subject.id }); return `${subject.name}: average ${average.count ? `${average.grade} (${average.percentage.toFixed(1)}%)` : "not recorded"}, target ${membership.targetGrade || "not set"}, ${openFeedbackCount(state.profile.id, subject.id)} open feedback loop(s).`; }).join("\n");
 }
 
 function attachFeedbackListener() {

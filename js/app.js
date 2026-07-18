@@ -43,6 +43,7 @@ const state = {
 };
 
 const autosave = { timer: null, saving: false, queued: false, inFlight: Promise.resolve() };
+let lastRichSelection = null;
 
 const roleLabels = {
   schoolAdmin: "School administrator",
@@ -1067,35 +1068,126 @@ async function withBusy(button, task) {
   finally { if (button) { button.disabled = false; button.textContent = old; } }
 }
 
-// Keep the pupil's text selection active when a toolbar button is pressed.
-// Without this, the button receives focus before the click handler runs and
-// the browser collapses the selection, so bold/highlight appears to do nothing.
-app.addEventListener("pointerdown", (event) => {
-  const formatButton = event.target.closest("[data-editor-command]");
-  if (!formatButton) return;
-  const shell = formatButton.closest(".rich-editor-shell");
-  const editor = shell?.querySelector("[contenteditable]");
-  if (!editor) return;
+// Rich-text formatting is handled with the Selection and Range APIs rather
+// than document.execCommand. This keeps formatting reliable in current Chrome
+// and also lets the toolbar act on the pupil's most recently selected words.
+function richEditorForRange(range) {
+  if (!range) return null;
+  const container = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+    ? range.commonAncestorContainer
+    : range.commonAncestorContainer.parentElement;
+  return container?.closest?.('.rich-editor[contenteditable="true"]') || null;
+}
 
-  const selection = window.getSelection();
-  if (selection?.rangeCount) {
-    const range = selection.getRangeAt(0);
-    if (editor.contains(range.commonAncestorContainer)) {
-      editor.__feedbackLoopSelection = range.cloneRange();
-    }
-  }
-  event.preventDefault();
-});
-
-document.addEventListener("selectionchange", () => {
+function rememberRichSelection() {
   const selection = window.getSelection();
   if (!selection?.rangeCount) return;
   const range = selection.getRangeAt(0);
-  const node = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-    ? range.commonAncestorContainer
-    : range.commonAncestorContainer.parentElement;
-  const editor = node?.closest?.(".rich-editor[contenteditable]");
-  if (editor) editor.__feedbackLoopSelection = range.cloneRange();
+  const editor = richEditorForRange(range);
+  if (!editor) return;
+  const saved = range.cloneRange();
+  editor.__feedbackLoopSelection = saved;
+  lastRichSelection = { editor, range: saved };
+}
+
+function removeFormattingFromFragment(fragment) {
+  for (const element of [...fragment.querySelectorAll('b, strong, span')].reverse()) {
+    element.replaceWith(...element.childNodes);
+  }
+}
+
+function selectInsertedContent(selection, wrapper, insertedNodes = []) {
+  const nextRange = document.createRange();
+  if (wrapper) {
+    nextRange.selectNodeContents(wrapper);
+  } else if (insertedNodes.length) {
+    nextRange.setStartBefore(insertedNodes[0]);
+    nextRange.setEndAfter(insertedNodes[insertedNodes.length - 1]);
+  } else {
+    return null;
+  }
+  selection.removeAllRanges();
+  selection.addRange(nextRange);
+  return nextRange;
+}
+
+function applyRichFormatting(formatButton) {
+  const shellEditor = formatButton.closest('.rich-editor-shell')?.querySelector('.rich-editor[contenteditable="true"]');
+  const currentSelection = window.getSelection();
+  let editor = null;
+  let range = null;
+
+  if (currentSelection?.rangeCount) {
+    const currentRange = currentSelection.getRangeAt(0);
+    const currentEditor = richEditorForRange(currentRange);
+    if (currentEditor && !currentRange.collapsed) {
+      editor = currentEditor;
+      range = currentRange.cloneRange();
+    }
+  }
+
+  if (!range && lastRichSelection?.editor?.isConnected && !lastRichSelection.range.collapsed) {
+    editor = lastRichSelection.editor;
+    range = lastRichSelection.range.cloneRange();
+  }
+
+  if (!range && shellEditor?.__feedbackLoopSelection && !shellEditor.__feedbackLoopSelection.collapsed) {
+    editor = shellEditor;
+    range = shellEditor.__feedbackLoopSelection.cloneRange();
+  }
+
+  if (!editor || !range || range.collapsed || !editor.contains(range.commonAncestorContainer)) {
+    toast('Select the words you want to format first.', 'error');
+    return;
+  }
+
+  editor.focus({ preventScroll: true });
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  const command = formatButton.dataset.editorCommand;
+  let selectedRange = null;
+
+  if (command === 'removeFormat') {
+    const fragment = range.extractContents();
+    removeFormattingFromFragment(fragment);
+    const insertedNodes = [...fragment.childNodes];
+    range.insertNode(fragment);
+    selectedRange = selectInsertedContent(selection, null, insertedNodes);
+  } else {
+    const wrapper = command === 'bold'
+      ? document.createElement('strong')
+      : document.createElement('span');
+    if (command === 'highlight') wrapper.style.backgroundColor = formatButton.dataset.colour || '#fff3a3';
+    wrapper.append(range.extractContents());
+    range.insertNode(wrapper);
+    selectedRange = selectInsertedContent(selection, wrapper);
+  }
+
+  if (selectedRange) {
+    const saved = selectedRange.cloneRange();
+    editor.__feedbackLoopSelection = saved;
+    lastRichSelection = { editor, range: saved };
+  }
+
+  editor.normalize();
+  editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'formatBold' }));
+  const form = editor.closest('form[data-feedback-editor]');
+  if (form) scheduleFeedbackAutosave(form);
+}
+
+document.addEventListener('selectionchange', rememberRichSelection);
+
+// Apply formatting on pointerdown, before a toolbar button can remove the
+// selection. The click handler below covers keyboard activation as well.
+app.addEventListener('pointerdown', (event) => {
+  const formatButton = event.target.closest('[data-editor-command]');
+  if (!formatButton) return;
+  event.preventDefault();
+  rememberRichSelection();
+  applyRichFormatting(formatButton);
+  formatButton.__feedbackLoopPointerHandled = true;
 });
 
 app.addEventListener("click", async (event) => {
@@ -1106,31 +1198,15 @@ app.addEventListener("click", async (event) => {
   const route = event.target.closest("[data-route]");
   if (route) { state.route = route.dataset.route; state.modal = null; renderShell(); return; }
 
-  const formatButton = event.target.closest("[data-editor-command]");
+  const formatButton = event.target.closest('[data-editor-command]');
   if (formatButton) {
     event.preventDefault();
-    const shell = formatButton.closest(".rich-editor-shell");
-    const editor = shell?.querySelector("[contenteditable]");
-    if (!editor) return;
-    editor.focus({ preventScroll: true });
-    const selection = window.getSelection();
-    const savedRange = editor.__feedbackLoopSelection;
-    if (selection && savedRange) {
-      selection.removeAllRanges();
-      selection.addRange(savedRange);
+    if (formatButton.__feedbackLoopPointerHandled) {
+      formatButton.__feedbackLoopPointerHandled = false;
+      return;
     }
-    const command = formatButton.dataset.editorCommand;
-    if (command === "highlight") {
-      const colour = formatButton.dataset.colour;
-      const applied = document.execCommand("hiliteColor", false, colour);
-      if (!applied) document.execCommand("backColor", false, colour);
-    } else {
-      document.execCommand(command, false);
-    }
-    if (selection?.rangeCount) editor.__feedbackLoopSelection = selection.getRangeAt(0).cloneRange();
-    editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "formatSetBlockTextDirection" }));
-    const form = formatButton.closest("form[data-feedback-editor]");
-    if (form) scheduleFeedbackAutosave(form);
+    rememberRichSelection();
+    applyRichFormatting(formatButton);
     return;
   }
 

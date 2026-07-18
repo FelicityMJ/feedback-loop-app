@@ -1,0 +1,10 @@
+{
+  "name": "FeedbackLoop",
+  "short_name": "FeedbackLoop",
+  "description": "School feedback, pupil reflection and progress tracking.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f7ff",
+  "theme_color": "#3157d5",
+  "icons": []
+}

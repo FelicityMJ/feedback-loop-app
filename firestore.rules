@@ -1,0 +1,262 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function hasUser() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isCurrentSchool(schoolId) {
+      return hasUser() && me().schoolId == schoolId;
+    }
+
+    function isHistoricalSchool(schoolId) {
+      return hasUser()
+        && me().role == 'pupil'
+        && me().schoolHistoryIds is list
+        && me().schoolHistoryIds.hasAny([schoolId]);
+    }
+
+    function canReadSchool(schoolId) {
+      return isCurrentSchool(schoolId) || isHistoricalSchool(schoolId);
+    }
+
+    function isSchoolAdmin(schoolId) {
+      return isCurrentSchool(schoolId) && me().role == 'schoolAdmin';
+    }
+
+    function isDepartmentHead(schoolId) {
+      return isCurrentSchool(schoolId) && me().role == 'departmentHead';
+    }
+
+    function isTeacher(schoolId) {
+      return isCurrentSchool(schoolId) && me().role == 'teacher';
+    }
+
+    function isStaff(schoolId) {
+      return isSchoolAdmin(schoolId) || isDepartmentHead(schoolId) || isTeacher(schoolId);
+    }
+
+    function ownsPupilRecord(data) {
+      return signedIn() && data.pupilId == request.auth.uid;
+    }
+
+    function validInvite(schoolId, inviteCode, role) {
+      return inviteCode is string
+        && exists(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode))
+        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.active == true
+        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.role == role;
+    }
+
+    function approvedTransfer(transferId, pupilId, toSchoolId) {
+      return transferId is string
+        && exists(/databases/$(database)/documents/transferRequests/$(transferId))
+        && get(/databases/$(database)/documents/transferRequests/$(transferId)).data.pupilId == pupilId
+        && get(/databases/$(database)/documents/transferRequests/$(transferId)).data.toSchoolId == toSchoolId
+        && get(/databases/$(database)/documents/transferRequests/$(transferId)).data.status == 'accepted';
+    }
+
+    match /users/{uid} {
+      allow create: if isSelf(uid)
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.schoolId is string
+        && request.resource.data.role in ['schoolAdmin', 'departmentHead', 'teacher', 'pupil']
+        && validInvite(
+          request.resource.data.schoolId,
+          request.resource.data.inviteCode,
+          request.resource.data.role
+        );
+
+      allow read: if isSelf(uid)
+        || (hasUser() && me().role in ['schoolAdmin', 'departmentHead', 'teacher']
+          && resource.data.schoolId == me().schoolId);
+
+      allow update: if (
+        isSelf(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'email', 'photoURL', 'preferences', 'lastSeenAt', 'updatedAt'
+        ])
+      ) || (
+        isSelf(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'schoolId', 'schoolHistoryIds', 'approvedTransferId', 'updatedAt'
+        ])
+        && approvedTransfer(
+          request.resource.data.approvedTransferId,
+          uid,
+          request.resource.data.schoolId
+        )
+      ) || isSchoolAdmin(resource.data.schoolId);
+
+      allow delete: if isSchoolAdmin(resource.data.schoolId);
+    }
+
+    match /schools/{schoolId} {
+      allow get: if signedIn();
+      allow list: if hasUser() && me().role == 'schoolAdmin';
+      allow create: if false; // Create the first school document in Firebase Console.
+      allow update: if isSchoolAdmin(schoolId);
+      allow delete: if false;
+
+      match /departments/{departmentId} {
+        allow read: if canReadSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isDepartmentHead(schoolId);
+      }
+
+      match /subjects/{subjectId} {
+        allow read: if canReadSchool(schoolId);
+        allow write: if isSchoolAdmin(schoolId) || isDepartmentHead(schoolId);
+      }
+
+      match /classes/{classId} {
+        allow read: if canReadSchool(schoolId);
+        allow create: if isStaff(schoolId);
+        allow update: if isStaff(schoolId);
+        allow delete: if isSchoolAdmin(schoolId);
+      }
+
+      match /memberships/{membershipId} {
+        allow read: if isStaff(schoolId)
+          || (signedIn() && resource.data.userId == request.auth.uid);
+
+        allow create: if isStaff(schoolId)
+          || (
+            signedIn()
+            && request.resource.data.userId == request.auth.uid
+            && validInvite(schoolId, request.resource.data.inviteCode, 'pupil')
+          )
+          || (
+            signedIn()
+            && request.resource.data.userId == request.auth.uid
+            && approvedTransfer(
+              request.resource.data.approvedTransferId,
+              request.auth.uid,
+              schoolId
+            )
+          );
+
+        allow update, delete: if isStaff(schoolId);
+      }
+
+      match /assessments/{assessmentId} {
+        allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
+        allow create, update, delete: if isStaff(schoolId);
+      }
+
+      match /feedbackRecords/{feedbackId} {
+        allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
+        allow create, update, delete: if isStaff(schoolId);
+      }
+
+      match /feedbackActions/{actionId} {
+        allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
+        allow create: if isStaff(schoolId)
+          || (signedIn()
+            && request.resource.data.pupilId == request.auth.uid
+            && request.resource.data.status == 'submitted');
+        allow update: if isStaff(schoolId)
+          || (ownsPupilRecord(resource.data)
+            && request.resource.data.pupilId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'reflection', 'actionTaken', 'confidenceBefore', 'confidenceAfter',
+              'status', 'submittedAt', 'updatedAt'
+            ]));
+        allow delete: if isSchoolAdmin(schoolId);
+      }
+
+      match /interventions/{interventionId} {
+        allow read, write: if isStaff(schoolId);
+      }
+
+      match /invites/{inviteCode} {
+        // A long random code can be checked directly during registration.
+        // Listing all invitation codes is restricted to the school administrator.
+        allow get: if true;
+        allow list: if isSchoolAdmin(schoolId);
+        allow create: if isSchoolAdmin(schoolId)
+          || (isStaff(schoolId)
+            && request.resource.data.role == 'pupil'
+            && request.resource.data.createdBy == request.auth.uid);
+        allow update, delete: if isSchoolAdmin(schoolId)
+          || (isStaff(schoolId) && resource.data.createdBy == request.auth.uid);
+      }
+
+      match /auditLogs/{logId} {
+        allow read: if isSchoolAdmin(schoolId);
+        allow create: if isStaff(schoolId);
+        allow update, delete: if false;
+      }
+    }
+
+    match /emailChangeRequests/{requestId} {
+      allow create: if signedIn()
+        && request.resource.data.pupilId == request.auth.uid
+        && request.resource.data.schoolId == me().schoolId
+        && me().role == 'pupil'
+        && request.resource.data.status == 'requested';
+
+      allow read: if signedIn()
+        && (resource.data.pupilId == request.auth.uid
+          || isSchoolAdmin(resource.data.schoolId));
+
+      allow update: if isSchoolAdmin(resource.data.schoolId)
+        || (
+          signedIn()
+          && resource.data.pupilId == request.auth.uid
+          && resource.data.status == 'approved'
+          && request.auth.token.email == resource.data.newEmail
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'completedAt'
+          ])
+        );
+
+      allow delete: if false;
+    }
+
+    match /transferRequests/{requestId} {
+      allow create: if signedIn()
+        && me().role == 'pupil'
+        && request.resource.data.pupilId == request.auth.uid
+        && request.resource.data.fromSchoolId == me().schoolId
+        && request.resource.data.status == 'requested'
+        && exists(/databases/$(database)/documents/schools/$(request.resource.data.toSchoolId))
+        && get(/databases/$(database)/documents/schools/$(request.resource.data.toSchoolId)).data.transferCode
+          == request.resource.data.destinationCode;
+
+      allow read: if signedIn()
+        && (resource.data.pupilId == request.auth.uid
+          || isSchoolAdmin(resource.data.fromSchoolId)
+          || isSchoolAdmin(resource.data.toSchoolId));
+
+      allow update: if (
+        isSchoolAdmin(resource.data.toSchoolId)
+        && resource.data.status == 'requested'
+        && request.resource.data.status in ['accepted', 'declined']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'classIds', 'decidedAt'
+        ])
+      ) || (
+        signedIn()
+        && resource.data.pupilId == request.auth.uid
+        && resource.data.status == 'accepted'
+        && request.resource.data.status == 'completed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'completedAt'
+        ])
+      );
+
+      allow delete: if false;
+    }
+  }
+}

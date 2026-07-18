@@ -170,6 +170,110 @@ const percentageAndGrade = (score, maxScore) => {
   return { score: scoreNumber, maxScore: maximumNumber, percentage, grade: gradeFromPercentage(percentage) };
 };
 
+
+const targetPercentageForGrade = (grade) => ({
+  A1: 85,
+  A2: 70,
+  B3: 65,
+  B4: 60,
+  C5: 55,
+  C6: 50,
+  D7: 45,
+  D8: 40,
+  "NO AWARD": 0
+})[String(grade || "").trim().toUpperCase()] ?? null;
+
+const clampPercentage = (value) => Math.max(0, Math.min(100, Number(value) || 0));
+
+function gaugePoint(percent, radius = 112, centreX = 180, centreY = 162) {
+  const angle = (180 + clampPercentage(percent) * 1.8) * Math.PI / 180;
+  return {
+    x: centreX + radius * Math.cos(angle),
+    y: centreY + radius * Math.sin(angle)
+  };
+}
+
+function gaugeArc(startPercent, endPercent) {
+  const start = gaugePoint(startPercent);
+  const end = gaugePoint(endPercent);
+  const largeArc = Math.abs(endPercent - startPercent) > 50 ? 1 : 0;
+  return `M ${start.x.toFixed(2)} ${start.y.toFixed(2)} A 112 112 0 ${largeArc} 1 ${end.x.toFixed(2)} ${end.y.toFixed(2)}`;
+}
+
+function averageGaugeSvg(assessments, targetGrade) {
+  const values = (assessments || [])
+    .map((assessment) => Number(assessment.percentage))
+    .filter((value) => Number.isFinite(value));
+  const average = values.length ? values.reduce((total, value) => total + value, 0) / values.length : null;
+  const displayAverage = average === null ? "—" : `${average.toFixed(1)}%`;
+  const averageGrade = average === null ? "No results yet" : gradeFromPercentage(average);
+  const needle = average === null ? null : gaugePoint(average, 92);
+  const targetPercent = targetPercentageForGrade(targetGrade);
+  const targetOuter = targetPercent === null ? null : gaugePoint(targetPercent, 124);
+  const targetInner = targetPercent === null ? null : gaugePoint(targetPercent, 99);
+
+  return `<div class="average-gauge-wrap">
+    <svg class="average-gauge" viewBox="0 0 360 245" role="img" aria-label="Average result ${e(displayAverage)}, ${e(averageGrade)}">
+      <path d="${gaugeArc(0, 100)}" class="gauge-track"></path>
+      <path d="${gaugeArc(0, 40)}" class="gauge-zone gauge-zone-red"></path>
+      <path d="${gaugeArc(40, 70)}" class="gauge-zone gauge-zone-amber"></path>
+      <path d="${gaugeArc(70, 100)}" class="gauge-zone gauge-zone-green"></path>
+      <line x1="68" y1="174" x2="68" y2="184" class="gauge-end-tick"></line>
+      <line x1="292" y1="174" x2="292" y2="184" class="gauge-end-tick"></line>
+      ${targetOuter && targetInner ? `<line x1="${targetInner.x.toFixed(2)}" y1="${targetInner.y.toFixed(2)}" x2="${targetOuter.x.toFixed(2)}" y2="${targetOuter.y.toFixed(2)}" class="gauge-target-tick"><title>Target ${e(targetGrade)}</title></line>` : ""}
+      ${needle ? `<line x1="180" y1="162" x2="${needle.x.toFixed(2)}" y2="${needle.y.toFixed(2)}" class="gauge-needle"></line><circle cx="180" cy="162" r="12" class="gauge-hub"></circle>` : `<circle cx="180" cy="162" r="8" class="gauge-hub gauge-hub-empty"></circle>`}
+      <text x="55" y="204" class="gauge-scale-label">0%</text>
+      <text x="305" y="204" text-anchor="end" class="gauge-scale-label">100%</text>
+      <text x="180" y="208" text-anchor="middle" class="gauge-value">${e(displayAverage)}</text>
+      <text x="180" y="232" text-anchor="middle" class="gauge-grade">${e(averageGrade)}</text>
+    </svg>
+    <div class="gauge-summary"><strong>${values.length}</strong> result${values.length === 1 ? "" : "s"} included${targetGrade ? ` · target marker ${e(targetGrade)}` : ""}</div>
+  </div>`;
+}
+
+function ragSummary(feedback) {
+  const counts = { Green: 0, Amber: 0, Red: 0 };
+  (feedback || []).forEach((record) => {
+    const value = String(record.trafficLight || "").trim().toLowerCase();
+    if (value.includes("green")) counts.Green += 1;
+    else if (value.includes("red")) counts.Red += 1;
+    else if (value.includes("amber") || value.includes("yellow")) counts.Amber += 1;
+  });
+  return counts;
+}
+
+function ragDonutSvg(feedback) {
+  const counts = ragSummary(feedback);
+  const total = counts.Green + counts.Amber + counts.Red;
+  const segments = [
+    { label: "Green", count: counts.Green, className: "rag-green" },
+    { label: "Amber", count: counts.Amber, className: "rag-amber" },
+    { label: "Red", count: counts.Red, className: "rag-red" }
+  ];
+  let offset = 0;
+  const circles = total ? segments.map((segment) => {
+    const percentage = segment.count / total * 100;
+    const circle = percentage > 0 ? `<circle cx="110" cy="110" r="74" pathLength="100" class="rag-segment ${segment.className}" stroke-dasharray="${percentage.toFixed(4)} ${(100 - percentage).toFixed(4)}" stroke-dashoffset="-${offset.toFixed(4)}"></circle>` : "";
+    offset += percentage;
+    return circle;
+  }).join("") : `<circle cx="110" cy="110" r="74" pathLength="100" class="rag-segment rag-empty"></circle>`;
+
+  const legend = segments.map((segment) => {
+    const percentage = total ? Math.round(segment.count / total * 100) : 0;
+    return `<div class="rag-legend-row"><span class="rag-key ${segment.className}"></span><span>${segment.label}</span><strong>${segment.count}</strong><small>${percentage}%</small></div>`;
+  }).join("");
+
+  return `<div class="rag-chart-layout">
+    <svg class="rag-donut" viewBox="0 0 220 220" role="img" aria-label="${counts.Green} green, ${counts.Amber} amber and ${counts.Red} red feedback records">
+      <circle cx="110" cy="110" r="74" class="rag-ring"></circle>
+      ${circles}
+      <text x="110" y="103" text-anchor="middle" class="rag-total">${total}</text>
+      <text x="110" y="126" text-anchor="middle" class="rag-total-label">feedback record${total === 1 ? "" : "s"}</text>
+    </svg>
+    <div class="rag-legend">${legend}</div>
+  </div>`;
+}
+
 function toast(message, type = "success") {
   let stack = document.querySelector(".toast-stack");
   if (!stack) {
@@ -419,6 +523,10 @@ function renderPupilOverview() {
       ${kpi("◎", "Target grade", membership.targetGrade || "—", latest?.grade && membership.targetGrade && gradeValue(latest.grade) >= gradeValue(membership.targetGrade) ? "On or above target" : "Keep moving towards it")}
       ${kpi("✓", "Loops closed", closed.length, "Improvements kept in your record")}
       ${kpi("✎", "Still to act on", open.length, open.length ? "Choose one next step today" : "All caught up")}
+    </div>
+    <div class="grid grid-2 pupil-insight-grid" style="margin-top:18px">
+      <section class="card insight-card"><div class="card-head"><div><h3>Average result so far</h3><p>Your mean percentage across completed ${e(subject)} assessments.</p></div>${badge(assessments.length ? gradeFromPercentage(assessments.reduce((sum, item) => sum + Number(item.percentage || 0), 0) / assessments.length) : "No results")}</div><div class="card-body">${averageGaugeSvg(assessments, membership.targetGrade)}</div></section>
+      <section class="card insight-card"><div class="card-head"><div><h3>My feedback colours</h3><p>How often you have selected green, amber or red in completed feedback.</p></div>${badge(`${feedback.length} record${feedback.length === 1 ? "" : "s"}`)}</div><div class="card-body">${ragDonutSvg(feedback)}</div></section>
     </div>
     <div class="grid grid-3" style="margin-top:18px">
       <section class="card span-2"><div class="card-head"><div><h3>Grade progress</h3><p>Your grades compared with your target over time.</p></div>${badge(`Target ${membership.targetGrade || "—"}`)}</div><div class="card-body chart-wrap">${gradeChartSvg(assessments, membership.targetGrade)}</div></section>

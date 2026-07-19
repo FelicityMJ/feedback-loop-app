@@ -37,6 +37,7 @@ import {
   createTransferRequest,
   decideTransferRequest,
   completeTransfer,
+  writeAuditLog,
   resetDemoData
 } from "./firebase-service.js";
 import { gradeChartSvg, miniBarSvg, gradeValue, gradeFromPercentage, GRADE_LABELS } from "./charts.js";
@@ -56,7 +57,10 @@ const state = {
   selectedPupilId: null,
   modal: null,
   loading: true,
-  feedbackUnsubscribe: null
+  feedbackUnsubscribe: null,
+  improvementStatusFilter: "all",
+  improvementTopicFilter: "all",
+  improvementSearch: ""
 };
 
 const autosave = { timer: null, saving: false, queued: false, inFlight: Promise.resolve() };
@@ -92,6 +96,7 @@ const routeConfig = {
   pupil: [
     ["overview", "▦", "My progress"],
     ["feedback", "✓", "My feedback loops"],
+    ["improvements", "◎", "Mistake & improvement bank"],
     ["portfolio", "▤", "My learning record"],
     ["transfer", "⇄", "Account & transfer"]
   ]
@@ -168,13 +173,15 @@ const workspaceMutationActions = new Set([
   "toggle-invite", "approve-class-migration", "decline-class-migration", "complete-class-migration",
   "add-department", "add-subject", "add-class", "create-invite", "class-invite", "co-teacher-code",
   "assign-teacher", "manage-staff-roles", "add-assessment", "add-feedback", "pupil-add-feedback",
+  "start-feedback-session", "update-feedback-session", "close-feedback-session", "reopen-feedback-session", "archive-feedback-session",
   "continue-feedback-draft", "save-feedback-draft", "edit-pupil-feedback", "edit-feedback-result",
+  "manage-improvement", "toggle-improvement-pin", "review-risk",
   "acknowledge-feedback-edit", "reflect", "review-action", "set-target", "add-intervention",
   "request-email-change", "request-transfer", "approve-email", "decline-email", "accept-transfer",
   "decline-transfer", "complete-transfer", "move-class-to-school"
 ]);
 
-const nonWorkspaceForms = new Set(["signin", "register", "independent-teacher", "school-activation"]);
+const nonWorkspaceForms = new Set(["signin", "register", "independent-teacher", "school-activation", "print-portfolio"]);
 
 function blockReadOnlyChange() {
   if (!state.profile || !workspaceIsReadOnly()) return false;
@@ -472,6 +479,19 @@ function actionForFeedback(feedbackId) {
   return (state.data?.feedbackActions || []).find((a) => a.feedbackId === feedbackId);
 }
 
+function riskLevelFromScore(score) {
+  return score >= 5 ? "High" : score >= 2 ? "Medium" : "Low";
+}
+
+function latestRiskOverride(pupilId, classId = null) {
+  const active = (state.data?.riskOverrides || []).filter((item) => item.pupilId === pupilId && item.active !== false);
+  if (classId) {
+    const exact = sortByDateDesc(active.filter((item) => item.classId === classId), "createdAt")[0];
+    if (exact) return exact;
+  }
+  return sortByDateDesc(active.filter((item) => !item.classId), "createdAt")[0] || null;
+}
+
 function atRiskInfo(pupilId, classId = null) {
   const memberships = (state.data?.memberships || []).filter((membership) => membership.userId === pupilId
     && membership.active !== false
@@ -482,9 +502,16 @@ function atRiskInfo(pupilId, classId = null) {
   const feedback = (state.data?.feedbackRecords || []).filter((record) => record.pupilId === pupilId
     && (!classId || record.classId === classId)
     && record.status !== "draft");
-  const interventions = (state.data?.interventions || []).filter((intervention) => intervention.pupilId === pupilId && intervention.status !== "Closed");
+  const interventions = (state.data?.interventions || []).filter((intervention) => intervention.pupilId === pupilId
+    && (!classId || !intervention.classId || intervention.classId === classId)
+    && intervention.status !== "Closed");
   let score = 0;
-  const reasons = [];
+  const contributions = [];
+
+  const addContribution = (label, points, detail = "") => {
+    score += points;
+    contributions.push({ label, points, detail });
+  };
 
   const performanceOptions = memberships.map((membership) => {
     const average = assessmentAverage(pupilId, { classId: membership.classId, subjectId: membership.subjectId });
@@ -500,31 +527,39 @@ function atRiskInfo(pupilId, classId = null) {
     gap: 0
   };
 
-  // One grade band below target is treated as close to target rather than an at-risk flag.
-  // Two or more grade bands below target triggers a performance concern.
   const belowTarget = performance.gap >= 2;
   if (belowTarget) {
-    score += performance.gap >= 4 ? 4 : 2;
-    reasons.push(`${performance.gap} grade bands below target on average`);
+    addContribution(
+      `${performance.gap} grade bands below target on average`,
+      performance.gap >= 4 ? 4 : 2,
+      `Average ${performance.average.grade || "—"}; target ${performance.targetGrade || "—"}`
+    );
   }
 
   if (assessments.length >= 3) {
     const recent = assessments.slice(0, 3).map((assessment) => Number(assessment.percentage));
     if (recent.every(Number.isFinite) && recent[0] < recent[1] && recent[1] <= recent[2]) {
-      score += 2;
-      reasons.push("results declining");
+      addContribution("Recent results are declining", 2, `${recent[2]}% → ${recent[1]}% → ${recent[0]}%`);
     }
   }
   const unresolved = feedback.filter((record) => record.status !== "closed").length;
   const red = feedback.filter((record) => String(record.trafficLight).toLowerCase() === "red").length;
-  if (unresolved >= 2) { score += 1; reasons.push(`${unresolved} open feedback loops`); }
-  if (red >= 2) { score += 2; reasons.push("repeated red feedback"); }
-  if (interventions.length) { score += 2; reasons.push("active intervention"); }
+  if (unresolved >= 2) addContribution(`${unresolved} open feedback loops`, 1, "Two or more feedback actions remain unresolved");
+  if (red >= 2) addContribution("Repeated red confidence ratings", 2, `${red} completed feedback records are red`);
+  if (interventions.length) addContribution("Active intervention", 2, `${interventions.length} support plan${interventions.length === 1 ? "" : "s"} in progress`);
+
+  const calculatedLevel = riskLevelFromScore(score);
+  const override = latestRiskOverride(pupilId, classId);
+  const selectedLevel = override?.selectedLevel || calculatedLevel;
 
   return {
     score,
-    level: score >= 5 ? "High" : score >= 2 ? "Medium" : "Low",
-    reasons,
+    calculatedLevel,
+    level: selectedLevel,
+    reviewedLevel: selectedLevel,
+    override,
+    contributions,
+    reasons: contributions.map((item) => item.label),
     belowTarget,
     gradeGap: performance.gap,
     averageGrade: performance.average.grade || "—",
@@ -542,6 +577,13 @@ function badge(value) {
     : key.includes("medium") || key.includes("amber") || key.includes("requested") || key.includes("open") || key.includes("submitted") || key.includes("awaiting") ? "amber"
       : key.includes("low") || key.includes("green") || key.includes("closed") || key.includes("approved") || key.includes("completed") || key.includes("accepted") ? "green" : "grey";
   return `<span class="badge badge-${cls}">${e(text)}</span>`;
+}
+
+function riskExplanationHtml(risk, { compact = false } = {}) {
+  const rows = (risk.contributions || []).map((item) => `<li><span>${e(item.label)}${item.detail ? `<small>${e(item.detail)}</small>` : ""}</span><strong>+${e(item.points)}</strong></li>`).join("");
+  const override = risk.override ? `<div class="risk-override-note"><strong>Teacher-reviewed level: ${e(risk.level)}</strong><p>${e(risk.override.reason || "Professional judgement recorded.")}</p>${risk.override.reviewDate ? `<small>Review ${dateFmt(risk.override.reviewDate)}</small>` : ""}</div>` : "";
+  if (compact) return `<div class="small muted">Calculated ${e(risk.calculatedLevel)}${risk.override ? ` · reviewed ${e(risk.level)}` : ""}</div>`;
+  return `<div class="risk-explanation"><div class="risk-score-head"><span>Calculated score</span><strong>${e(risk.score)} · ${e(risk.calculatedLevel)}</strong></div>${rows ? `<ul>${rows}</ul>` : `<p class="muted">No current automatic concern indicators.</p>`}${override}</div>`;
 }
 
 function kpi(icon, label, value, note = "") {
@@ -564,7 +606,7 @@ function renderAuth() {
     ? "Sign in to open your personalised dashboard."
     : join
       ? "Pupils use a class code. Staff use a school-generated internal code. One login can hold several staff permissions."
-      : "V6.2 pilot workspaces are invitation-only and require an activation code.";
+      : "V6.3 pilot workspaces are invitation-only and require an activation code.";
   app.innerHTML = `<div class="auth-shell">
     <section class="auth-art">
       <div class="brand-mark">FL</div>
@@ -587,10 +629,10 @@ function renderAuth() {
       ${signin ? `
         <form data-form="signin"><div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div><div class="field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div><button class="btn btn-primary" type="submit">Sign in</button><div class="auth-divider"><span>or</span></div><button class="btn btn-ghost" type="button" data-action="google-signin">Continue with Google</button></form>
         <div class="auth-links"><button class="link-btn" data-action="forgot-password">Forgot password?</button><span class="muted">For any email-and-password account</span></div>` : join ? `
-        <form data-form="register"><div class="field"><label>Real full name</label><input name="displayName" autocomplete="name" required></div><div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div><div class="field"><label>Password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div><div class="field"><label>Class or internal staff code</label><input name="inviteCode" placeholder="workspace-id~CODE" required><span class="field-help">Existing department-head codes automatically include teacher access in V6.2.</span></div><button class="btn btn-primary" type="submit">Create account</button><div class="auth-divider"><span>or</span></div><button class="btn btn-ghost" type="button" data-action="google-register-invite">Join using Google</button></form>` : teacher ? `
+        <form data-form="register"><div class="field"><label>Real full name</label><input name="displayName" autocomplete="name" required></div><div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div><div class="field"><label>Password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div><div class="field"><label>Class or internal staff code</label><input name="inviteCode" placeholder="workspace-id~CODE" required><span class="field-help">Existing department-head codes automatically include teacher access in V6.3.</span></div><button class="btn btn-primary" type="submit">Create account</button><div class="auth-divider"><span>or</span></div><button class="btn btn-ghost" type="button" data-action="google-register-invite">Join using Google</button></form>` : teacher ? `
         <form data-form="independent-teacher"><div class="field"><label>Your real full name</label><input name="displayName" autocomplete="name" required></div><div class="field"><label>Workspace name</label><input name="workspaceName" placeholder="For example: Mrs Miller's Computing Classes" required></div><div class="field"><label>Pilot activation code</label><input name="activationCode" required autocomplete="off"></div><div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div><div class="field"><label>Password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div><button class="btn btn-primary" type="submit">Activate teacher workspace</button><div class="auth-divider"><span>or</span></div><button class="btn btn-ghost" type="button" data-action="google-register-teacher">Activate using Google</button></form>` : `
         <form data-form="school-activation"><div class="field"><label>Your real full name</label><input name="displayName" autocomplete="name" required></div><div class="field"><label>School name</label><input name="schoolName" required></div><div class="field"><label>School activation code</label><input name="activationCode" required autocomplete="off"></div><label class="check-card"><input type="checkbox" name="assignTeacher" checked><span><strong>Also give me teacher access</strong><small>You can create and teach classes while remaining school administrator.</small></span></label><div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div><div class="field"><label>Password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div><button class="btn btn-primary" type="submit">Activate school</button><div class="auth-divider"><span>or</span></div><button class="btn btn-ghost" type="button" data-action="google-register-school">Activate using Google</button></form>`}
-      ${isDemoMode ? `<div class="demo-box"><strong>Preview V6.2</strong><div class="small muted">Demo changes stay in this browser.</div><div class="demo-roles"><button class="btn btn-secondary btn-sm" data-demo-role="pupil">Pupil view</button><button class="btn btn-secondary btn-sm" data-demo-role="teacher">Teacher view</button><button class="btn btn-secondary btn-sm" data-demo-role="departmentHead">Multi-role head</button><button class="btn btn-secondary btn-sm" data-demo-role="schoolAdmin">Multi-role admin</button></div></div>` : ""}
+      ${isDemoMode ? `<div class="demo-box"><strong>Preview V6.3</strong><div class="small muted">Demo changes stay in this browser.</div><div class="demo-roles"><button class="btn btn-secondary btn-sm" data-demo-role="pupil">Pupil view</button><button class="btn btn-secondary btn-sm" data-demo-role="teacher">Teacher view</button><button class="btn btn-secondary btn-sm" data-demo-role="departmentHead">Multi-role head</button><button class="btn btn-secondary btn-sm" data-demo-role="schoolAdmin">Multi-role admin</button></div></div>` : ""}
     </div></section></div>`;
 }
 
@@ -644,6 +686,7 @@ function pupilPageHead(title, description, extraActions = "") {
 
 function renderPupilRoute() {
   if (state.route === "feedback") return renderPupilFeedback();
+  if (state.route === "improvements") return renderImprovementBank();
   if (state.route === "portfolio") return renderPupilPortfolio();
   if (state.route === "transfer") return renderPupilTransfer();
   return renderPupilOverview();
@@ -690,14 +733,105 @@ function feedbackTimelineItem(f) {
   return `<div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-content"><div class="timeline-meta">${badge(f.feedbackType || "Feedback")} ${badge(f.trafficLight)} ${badge(f.status)} ${result}</div><h4>${e(f.assessmentName || f.skill)}</h4><div class="feedback-section"><strong>What went well</strong><div class="rich-output">${richText(f.strengthHtml, f.strength)}</div></div><div class="feedback-section"><strong>Next step</strong><div class="rich-output">${richText(f.nextStepHtml, f.nextStep)}</div></div>${action ? `<p><strong>Your action:</strong> ${e(action.actionTaken)}</p>` : ""}<div class="small muted">${dateFmt(f.date)} · ${e(f.skill)}</div></div></div>`;
 }
 
+function feedbackSessionsForPupil(pupilId = state.profile?.id) {
+  const classIds = new Set((state.data?.memberships || []).filter((membership) => membership.userId === pupilId && membership.active !== false).map((membership) => membership.classId));
+  return sortByDateDesc((state.data?.feedbackSessions || []).filter((session) => classIds.has(session.classId) && session.status === "open"), "createdAt");
+}
+
+function feedbackSessionsVisibleToTeacher() {
+  const classIds = new Set(classesVisibleToProfile().map((item) => item.id));
+  return sortByDateDesc((state.data?.feedbackSessions || []).filter((session) => classIds.has(session.classId) && session.status !== "archived"), "createdAt");
+}
+
+function feedbackSessionStats(session) {
+  const pupils = pupilsForClass(session.classId);
+  const records = (state.data?.feedbackRecords || []).filter((record) => record.sessionId === session.id);
+  const drafts = records.filter((record) => record.status === "draft");
+  const submitted = records.filter((record) => record.status !== "draft");
+  const activeCutoff = Date.now() - 5 * 60 * 1000;
+  const activeNow = drafts.filter((record) => new Date(record.autosavedAt || record.updatedAt || 0).getTime() >= activeCutoff);
+  const participants = new Set(records.map((record) => record.pupilId));
+  const notStarted = pupils.filter((pupil) => !participants.has(pupil.id));
+  return {
+    pupils,
+    records,
+    drafts,
+    submitted,
+    activeNow,
+    notStarted,
+    red: submitted.filter((record) => String(record.trafficLight).toLowerCase() === "red")
+  };
+}
+
+function normaliseTopic(value = "") {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function improvementItemsForPupil(pupilId = state.profile?.id) {
+  const records = (state.data?.feedbackRecords || []).filter((record) => record.pupilId === pupilId && record.status !== "draft");
+  const stored = (state.data?.improvementBank || []).filter((item) => item.pupilId === pupilId);
+  const byFeedback = new Map(stored.filter((item) => item.feedbackId).map((item) => [item.feedbackId, item]));
+  const topicCounts = new Map();
+  records.forEach((record) => {
+    const key = `${record.subjectId || ""}:${normaliseTopic(record.skill || record.assessmentName)}`;
+    topicCounts.set(key, (topicCounts.get(key) || 0) + 1);
+  });
+  const items = records.map((record) => {
+    const existing = byFeedback.get(record.id);
+    const key = `${record.subjectId || ""}:${normaliseTopic(record.skill || record.assessmentName)}`;
+    return {
+      id: existing?.id || `virtual-${record.id}`,
+      feedbackId: record.id,
+      pupilId,
+      classId: record.classId,
+      subjectId: record.subjectId,
+      title: existing?.title || record.assessmentName || record.skill || "Feedback item",
+      topic: existing?.topic || record.skill || "Other",
+      mistake: existing?.mistake || record.nextStep || "",
+      mistakeHtml: existing?.mistakeHtml || record.nextStepHtml || "",
+      improvementPlan: existing?.improvementPlan || record.nextStep || "",
+      status: existing?.status || (record.status === "closed" ? "Improved" : "New"),
+      confidence: existing?.confidence || record.trafficLight || "Amber",
+      pinned: existing?.pinned === true,
+      evidence: existing?.evidence || "",
+      dateIdentified: existing?.dateIdentified || record.date,
+      occurrenceCount: topicCounts.get(key) || 1,
+      stored: Boolean(existing)
+    };
+  });
+  for (const item of stored) {
+    if (!item.feedbackId || !records.some((record) => record.id === item.feedbackId)) items.push({ ...item, occurrenceCount: item.occurrenceCount || 1, stored: true });
+  }
+  return items.sort((a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.dateIdentified || 0) - new Date(a.dateIdentified || 0));
+}
+
+function renderImprovementBank() {
+  const all = improvementItemsForPupil();
+  const topics = unique(all.map((item) => item.topic)).sort((a, b) => a.localeCompare(b));
+  const search = state.improvementSearch.trim().toLowerCase();
+  const filtered = all.filter((item) => {
+    const statusMatch = state.improvementStatusFilter === "all" || item.status === state.improvementStatusFilter;
+    const topicMatch = state.improvementTopicFilter === "all" || item.topic === state.improvementTopicFilter;
+    const searchMatch = !search || [item.title, item.topic, item.mistake, item.improvementPlan, item.evidence].some((value) => String(value || "").toLowerCase().includes(search));
+    return statusMatch && topicMatch && searchMatch;
+  });
+  const statusOptions = ["all", "New", "Practising", "Improved", "Secure", "Needs revisiting"];
+  return `<div class="page-head"><div><h1>Mistake and improvement bank</h1><p>Keep the exact mistakes you do not want to repeat, record what you will do instead and add evidence when you improve.</p></div><div class="page-actions"><button class="btn btn-ghost" data-action="print-report">Save learning record as PDF</button></div></div>
+    <div class="grid grid-4">${kpi("◎", "Bank items", all.length)}${kpi("⚑", "Pinned", all.filter((item) => item.pinned).length)}${kpi("↻", "Repeated themes", all.filter((item) => item.occurrenceCount > 1).length)}${kpi("✓", "Secure", all.filter((item) => item.status === "Secure").length)}</div>
+    <section class="card card-pad improvement-filters" style="margin-top:18px"><div class="filter-row"><div class="field"><label>Status</label><select data-improvement-status-filter>${statusOptions.map((status) => `<option value="${e(status)}" ${state.improvementStatusFilter === status ? "selected" : ""}>${status === "all" ? "All statuses" : e(status)}</option>`).join("")}</select></div><div class="field"><label>Topic</label><select data-improvement-topic-filter><option value="all">All topics</option>${topics.map((topic) => `<option value="${e(topic)}" ${state.improvementTopicFilter === topic ? "selected" : ""}>${e(topic)}</option>`).join("")}</select></div><div class="field grow"><label>Search</label><input data-improvement-search value="${e(state.improvementSearch)}" placeholder="Search mistakes, topics or evidence"></div></div></section>
+    <div class="improvement-grid" style="margin-top:18px">${filtered.map((item) => `<article class="card improvement-card ${item.pinned ? "pinned" : ""}"><div class="card-head"><div><div class="timeline-meta">${badge(item.status)} ${badge(item.confidence)} ${item.occurrenceCount > 1 ? badge(`${item.occurrenceCount} related records`) : ""}</div><h3>${e(item.title)}</h3><p>${e(getSubjectName(item.subjectId))} · ${e(item.topic)} · ${dateFmt(item.dateIdentified)}</p></div><button class="pin-button ${item.pinned ? "active" : ""}" data-action="toggle-improvement-pin" data-id="${e(item.id)}" data-feedback-id="${e(item.feedbackId || "")}" aria-label="${item.pinned ? "Unpin" : "Pin"} improvement">★</button></div><div class="feedback-section"><strong>Mistake or next step</strong><div class="rich-output">${richText(item.mistakeHtml, item.mistake)}</div></div><div class="feedback-section"><strong>What I will do instead</strong><p>${e(item.improvementPlan || "Add a clear improvement plan.")}</p></div>${item.evidence ? `<div class="feedback-section"><strong>Evidence of improvement</strong><p>${e(item.evidence)}</p></div>` : ""}<div class="form-actions"><button class="btn btn-primary btn-sm" data-action="manage-improvement" data-id="${e(item.id)}" data-feedback-id="${e(item.feedbackId || "")}">Update item</button></div></article>`).join("") || `<div class="card empty">No improvement items match these filters.</div>`}</div>`;
+}
+
 function renderPupilFeedback() {
   ensureSelectedSubject();
   const subjectId = state.selectedSubjectId;
   const all = sortByDateDesc((state.data.feedbackRecords || []).filter((f) => f.pupilId === state.profile.id && f.subjectId === subjectId), "updatedAt");
   const drafts = all.filter((f) => f.status === "draft");
   const feedback = all.filter((f) => f.status !== "draft");
+  const sessions = feedbackSessionsForPupil().filter((session) => !all.some((record) => record.sessionId === session.id && record.status !== "draft"));
   return `${pupilPageHead("My feedback record", "Enter feedback yourself while it is fresh, then use it to avoid repeating the same mistakes.", `<button class="btn btn-primary" data-action="pupil-add-feedback">New feedback record</button>`)}
     <div class="alert alert-info" style="margin-bottom:18px">Choose the feedback type first. Verbal feedback needs no test result; prelims and formal tests calculate your percentage and detailed grade automatically. Everything autosaves as you type.</div>
+    ${sessions.length ? `<section class="card live-session-pupil" style="margin-bottom:18px"><div class="card-head"><div><h3>Teacher-led feedback sessions</h3><p>Your teacher has prepared these activities, so the class, title and topic are already filled in.</p></div>${badge(`${sessions.length} open`)}</div><div class="card-body session-grid">${sessions.map((session) => `<article class="session-card"><div><div class="timeline-meta">${badge(session.feedbackType || "Feedback session")} ${badge("Open")}</div><h4>${e(session.title)}</h4><p>${e(getClassName(session.classId))} · ${e(session.skill)}</p>${session.instructions ? `<small>${e(session.instructions)}</small>` : ""}</div><button class="btn btn-primary btn-sm" data-action="open-feedback-session" data-id="${e(session.id)}">Start session</button></article>`).join("")}</div></section>` : ""}
     ${drafts.length ? `<section class="card" style="margin-bottom:18px"><div class="card-head"><div><h3>Continue a draft</h3><p>These records were autosaved and can be finished today or another day.</p></div>${badge(`${drafts.length} draft${drafts.length === 1 ? "" : "s"}`)}</div><div class="card-body draft-grid">${drafts.map((f) => `<article class="draft-card"><div><div class="timeline-meta">${badge(f.feedbackType || "Draft")} ${badge("Autosaved draft")}</div><h4>${e(f.assessmentName || "Untitled feedback")}</h4><p>${e(f.skill || "Add a topic or skill")}</p><small>Last saved ${dateFmt(f.autosavedAt || f.updatedAt, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</small></div><button class="btn btn-secondary btn-sm" data-action="continue-feedback-draft" data-id="${f.id}">Continue</button></article>`).join("")}</div></section>` : ""}
     <div class="grid grid-2">
       ${feedback.length ? feedback.map((f) => {
@@ -711,14 +845,14 @@ function renderPupilFeedback() {
 function renderPupilPortfolio() {
   const assessments = sortByDateDesc((state.data.assessments || []).filter((a) => a.pupilId === state.profile.id));
   const feedback = sortByDateDesc((state.data.feedbackRecords || []).filter((f) => f.pupilId === state.profile.id && f.status !== "draft"));
-  return `<div class="page-head"><div><h1>My learning record</h1><p>This belongs to your continuing learner profile. Download a copy before leaving a school or use it to prepare for exams.</p></div><div class="page-actions"><button class="btn btn-ghost" data-action="export-csv">Download spreadsheet</button><button class="btn btn-ghost" data-action="export-json">Download data</button><button class="btn btn-primary" data-action="print-report">Printable PDF</button></div></div>
+  return `<div class="page-head"><div><h1>My learning record</h1><p>This belongs to your continuing learner profile. Download a copy before leaving a school or use it to prepare for exams.</p></div><div class="page-actions"><button class="btn btn-ghost" data-action="export-csv">Download spreadsheet</button><button class="btn btn-ghost" data-action="export-json">Download data</button><button class="btn btn-primary" data-action="print-report">Save as PDF</button></div></div>
     <div class="grid grid-3">
       ${kpi("▤", "Assessments", assessments.length, "Across all linked subjects")}
       ${kpi("✎", "Feedback records", feedback.length, "Strengths and next steps preserved")}
       ${kpi("✓", "Closed loops", feedback.filter((f) => f.status === "closed").length, "Evidence of improvement")}
     </div>
     <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Assessment history</h3><p>Your current-school record. The full export also includes available previous-school history.</p></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Subject</th><th>Assessment</th><th>Score</th><th>Grade</th></tr></thead><tbody>${assessments.map((a) => `<tr><td>${dateFmt(a.date)}</td><td>${e(getSubjectName(a.subjectId))}</td><td>${e(a.name)}</td><td>${e(a.score)}/${e(a.maxScore)} · ${formatPercent(a.percentage)}</td><td>${badge(a.grade)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No assessments yet.</td></tr>`}</tbody></table></div></section>
-    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Mistake and improvement bank</h3><p>Use this before prelims and final exams.</p></div></div><div class="card-body timeline">${feedback.map(feedbackTimelineItem).join("") || `<div class="empty">No feedback records yet.</div>`}</div></section>`;
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Recent feedback and improvement</h3><p>The structured bank now has its own page, with statuses, pinned items and evidence of improvement.</p></div><button class="btn btn-primary btn-sm" data-route="improvements">Open improvement bank</button></div><div class="card-body timeline">${feedback.slice(0, 5).map(feedbackTimelineItem).join("") || `<div class="empty">No feedback records yet.</div>`}</div></section>`;
 }
 
 function renderPupilTransfer() {
@@ -758,7 +892,7 @@ function classSnapshotTable(cls) {
     const membership = pupilMembership(pupil.id, cls.subjectId) || {};
     const average = assessmentAverage(pupil.id, { classId: cls.id, subjectId: cls.subjectId });
     const risk = atRiskInfo(pupil.id, cls.id);
-    return `<tr><td><button class="table-link" data-action="open-pupil" data-id="${pupil.id}">${e(pupil.displayName)}</button><div class="small muted">${e(pupil.email)}</div></td><td>${average.count ? `${badge(average.grade)} ${formatPercent(average.percentage)}` : "—"}</td><td>${badge(membership.targetGrade || "Not set")}</td><td>${openFeedbackCount(pupil.id, cls.subjectId)}</td><td>${badge(risk.level)}<div class="small muted">${e(risk.reasons.join(", "))}</div></td><td><button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${pupil.id}">Dashboard</button></td></tr>`;
+    return `<tr><td><button class="table-link" data-action="open-pupil" data-id="${pupil.id}">${e(pupil.displayName)}</button><div class="small muted">${e(pupil.email)}</div></td><td>${average.count ? `${badge(average.grade)} ${formatPercent(average.percentage)}` : "—"}</td><td>${badge(membership.targetGrade || "Not set")}</td><td>${openFeedbackCount(pupil.id, cls.subjectId)}</td><td>${badge(risk.level)}${riskExplanationHtml(risk, { compact: true })}</td><td><div class="table-actions"><button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${pupil.id}">Dashboard</button><button class="btn btn-primary btn-sm" data-action="review-risk" data-id="${pupil.id}" data-class-id="${cls.id}">Review</button></div></td></tr>`;
   }).join("") || `<tr><td colspan="6" class="empty">No pupils linked to this class.</td></tr>`}</tbody></table></div>`;
 }
 
@@ -803,10 +937,13 @@ function renderTeacherFeedback() {
   const drafts = feedback.filter((f) => f.status === "draft");
   const submitted = feedback.filter((f) => f.status !== "draft");
   const results = submitted.filter((f) => f.percentage !== null && f.percentage !== undefined);
-  return `<div class="page-head"><div><h1>Live pupil feedback</h1><p>Pupils enter their own records after feedback. Drafts appear here as they autosave, so no teacher data entry is required.</p></div><div class="page-actions">${badge("Listening live")}</div></div>
-    <div class="grid grid-4">${kpi("◉", "Open pupil drafts", drafts.length, "Updates appear live")}${kpi("✎", "Submitted records", submitted.length)}${kpi("▤", "Results entered", results.length)}${kpi("✓", "Closed loops", submitted.filter((f) => f.status === "closed").length)}</div>
-    <section class="card live-monitor" style="margin-top:18px"><div class="card-head"><div><h3>Incoming drafts</h3><p>This section updates automatically while pupils type on another device.</p></div><span class="live-indicator"><span></span>Live</span></div><div class="card-body live-draft-list">${drafts.length ? drafts.map((f) => `<article class="live-draft"><div class="live-draft-main"><div class="timeline-meta">${badge(f.feedbackType || "Draft")} ${f.grade ? badge(f.grade) : ""}</div><h4>${e(getUserName(f.pupilId))} — ${e(f.assessmentName || "Untitled feedback")}</h4><p>${e(getClassName(f.classId))} · ${e(f.skill || "Topic not entered yet")}</p>${f.percentage !== null && f.percentage !== undefined ? `<strong>${e(f.score)} / ${e(f.maxScore)} · ${formatPercent(f.percentage)}</strong>` : ""}</div><div class="live-draft-side"><small>Saved ${dateFmt(f.autosavedAt || f.updatedAt, { hour: "2-digit", minute: "2-digit" })}</small><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View draft</button></div></article>`).join("") : `<div class="empty">No pupil is currently working on a draft.</div>`}</div></section>
-    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Completed feedback records</h3><p>Marks, grades and pupil-written next steps are shown together.</p></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Pupil</th><th>Type</th><th>Activity</th><th>Result</th><th>Next step</th><th></th></tr></thead><tbody>${submitted.map((f) => `<tr><td>${dateFmt(f.date)}</td><td><button class="table-link" data-action="open-pupil" data-id="${f.pupilId}">${e(getUserName(f.pupilId))}</button><div class="small muted">${e(getClassName(f.classId))}</div></td><td>${badge(f.feedbackType || "Feedback")}</td><td><strong>${e(f.assessmentName || f.skill)}</strong>${f.needsTeacherReview ? `<div>${badge("Pupil edit to review")}</div>` : ""}<div class="small muted">${e(f.skill)}</div></td><td>${f.percentage !== null && f.percentage !== undefined ? `${badge(f.grade)} ${formatPercent(f.percentage)}` : "No mark"}</td><td><div class="table-rich">${richText(f.nextStepHtml, f.nextStep)}</div></td><td><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">No completed feedback records yet.</td></tr>`}</tbody></table></div></section>`;
+  const sessions = feedbackSessionsVisibleToTeacher();
+  const openSessions = sessions.filter((session) => session.status === "open");
+  return `<div class="page-head"><div><h1>Live feedback sessions</h1><p>Prepare one class activity, watch drafts autosave and see exactly who has submitted, who is still writing and who has not started.</p></div><div class="page-actions"><span class="live-indicator"><span></span>Listening live</span><button class="btn btn-primary" data-action="start-feedback-session">Start feedback session</button></div></div>
+    <div class="grid grid-4">${kpi("◉", "Open sessions", openSessions.length, "Teacher-led class activities")}${kpi("✎", "Submitted records", submitted.length)}${kpi("▤", "Results entered", results.length)}${kpi("✓", "Closed loops", submitted.filter((f) => f.status === "closed").length)}</div>
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Class feedback sessions</h3><p>Close a session to stop new pupils starting it. Existing autosaved drafts remain available.</p></div></div><div class="card-body teacher-session-list">${sessions.length ? sessions.map((session) => { const stats = feedbackSessionStats(session); return `<article class="teacher-session-card"><div class="session-main"><div class="timeline-meta">${badge(session.status)} ${badge(session.feedbackType || "Feedback")}</div><h4>${e(session.title)}</h4><p>${e(getClassName(session.classId))} · ${e(session.skill)}</p>${session.instructions ? `<small>${e(session.instructions)}</small>` : ""}</div><div class="session-stat-grid"><div><strong>${stats.submitted.length}</strong><span>Submitted</span></div><div><strong>${stats.activeNow.length}</strong><span>Active now</span></div><div><strong>${stats.drafts.length}</strong><span>Drafts</span></div><div><strong>${stats.notStarted.length}</strong><span>Not started</span></div><div><strong>${stats.red.length}</strong><span>Red</span></div></div><div class="session-actions"><button class="btn btn-ghost btn-sm" data-action="view-feedback-session" data-id="${e(session.id)}">Open session</button>${session.status === "open" ? `<button class="btn btn-secondary btn-sm" data-action="close-feedback-session" data-id="${e(session.id)}">Close session</button>` : `<button class="btn btn-secondary btn-sm" data-action="reopen-feedback-session" data-id="${e(session.id)}">Reopen</button>`}<button class="btn btn-ghost btn-sm" data-action="copy-incomplete-session" data-id="${e(session.id)}">Copy incomplete list</button><button class="btn btn-ghost btn-sm" data-action="archive-feedback-session" data-id="${e(session.id)}">Archive</button></div></article>`; }).join("") : `<div class="empty">No feedback sessions yet. Start one before returning marked work to a class.</div>`}</div></section>
+    <section class="card live-monitor" style="margin-top:18px"><div class="card-head"><div><h3>Incoming drafts</h3><p>This section updates automatically while pupils type on another device.</p></div><span class="live-indicator"><span></span>Live</span></div><div class="card-body live-draft-list">${drafts.length ? drafts.map((f) => `<article class="live-draft"><div class="live-draft-main"><div class="timeline-meta">${badge(f.feedbackType || "Draft")} ${f.sessionId ? badge("Session") : ""} ${f.grade ? badge(f.grade) : ""}</div><h4>${e(getUserName(f.pupilId))} — ${e(f.assessmentName || "Untitled feedback")}</h4><p>${e(getClassName(f.classId))} · ${e(f.skill || "Topic not entered yet")}</p>${f.percentage !== null && f.percentage !== undefined ? `<strong>${e(f.score)} / ${e(f.maxScore)} · ${formatPercent(f.percentage)}</strong>` : ""}</div><div class="live-draft-side"><small>Saved ${dateFmt(f.autosavedAt || f.updatedAt, { hour: "2-digit", minute: "2-digit" })}</small><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View draft</button></div></article>`).join("") : `<div class="empty">No pupil is currently working on a draft.</div>`}</div></section>
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Completed feedback records</h3><p>Marks, grades and pupil-written next steps are shown together.</p></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Pupil</th><th>Type</th><th>Activity</th><th>Result</th><th>Next step</th><th></th></tr></thead><tbody>${submitted.map((f) => `<tr><td>${dateFmt(f.date)}</td><td><button class="table-link" data-action="open-pupil" data-id="${f.pupilId}">${e(getUserName(f.pupilId))}</button><div class="small muted">${e(getClassName(f.classId))}</div></td><td>${badge(f.feedbackType || "Feedback")}${f.sessionId ? `<div>${badge("Session")}</div>` : ""}</td><td><strong>${e(f.assessmentName || f.skill)}</strong>${f.needsTeacherReview ? `<div>${badge("Pupil edit to review")}</div>` : ""}<div class="small muted">${e(f.skill)}</div></td><td>${f.percentage !== null && f.percentage !== undefined ? `${badge(f.grade)} ${formatPercent(f.percentage)}` : "No mark"}</td><td><div class="table-rich">${richText(f.nextStepHtml, f.nextStep)}</div></td><td><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">No completed feedback records yet.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderPupilDirectory() {
@@ -817,7 +954,7 @@ function renderPupilDirectory() {
     const pupilClasses = classes.filter((c) => pupilsForClass(c.id).some((x) => x.id === p.id));
     const risk = atRiskInfo(p.id);
     const average = assessmentAverage(p.id);
-    return `<tr><td><strong>${e(p.displayName)}</strong><div class="small muted">${e(p.email)}</div></td><td>${e(pupilClasses.map((c) => c.name).join(", "))}</td><td>${average.count ? `${badge(average.grade)} ${formatPercent(average.percentage)}` : "—"}</td><td>${openFeedbackCount(p.id)}</td><td>${badge(risk.level)}<div class="small muted">${e(risk.reasons.join(", "))}</div></td><td><button class="btn btn-primary btn-sm" data-action="open-pupil" data-id="${p.id}">Open dashboard</button></td></tr>`;
+    return `<tr><td><strong>${e(p.displayName)}</strong><div class="small muted">${e(p.email)}</div></td><td>${e(pupilClasses.map((c) => c.name).join(", "))}</td><td>${average.count ? `${badge(average.grade)} ${formatPercent(average.percentage)}` : "—"}</td><td>${openFeedbackCount(p.id)}</td><td>${badge(risk.level)}${riskExplanationHtml(risk, { compact: true })}</td><td><div class="table-actions"><button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${p.id}">Dashboard</button><button class="btn btn-primary btn-sm" data-action="review-risk" data-id="${p.id}">Review</button></div></td></tr>`;
   }).join("") || `<tr><td colspan="6" class="empty">No pupils in your linked classes.</td></tr>`}</tbody></table></div></section>`;
 }
 
@@ -846,7 +983,7 @@ function renderHeadOverview() {
 }
 
 function riskTable(risks) {
-  return `<div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Average</th><th>Target</th><th>Indicators</th><th>Risk</th><th></th></tr></thead><tbody>${risks.map((risk) => `<tr><td><strong>${e(risk.pupil?.displayName)}</strong></td><td>${badge(risk.averageGrade)}${risk.averagePercentage !== null && risk.averagePercentage !== undefined ? ` <span class="small muted">${formatPercent(risk.averagePercentage)}</span>` : ""}</td><td>${badge(risk.targetGrade)}</td><td>${e(risk.reasons.join(", ") || "No current concern")}</td><td>${badge(risk.level)}</td><td><button class="btn btn-primary btn-sm" data-action="open-pupil" data-id="${risk.pupil?.id}">Dashboard</button></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No pupils currently flagged.</td></tr>`}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Average</th><th>Target</th><th>Transparent reasons</th><th>Concern</th><th></th></tr></thead><tbody>${risks.map((risk) => `<tr><td><strong>${e(risk.pupil?.displayName)}</strong></td><td>${badge(risk.averageGrade)}${risk.averagePercentage !== null && risk.averagePercentage !== undefined ? ` <span class="small muted">${formatPercent(risk.averagePercentage)}</span>` : ""}</td><td>${badge(risk.targetGrade)}</td><td>${(risk.contributions || []).length ? `<ul class="risk-reason-list">${risk.contributions.map((item) => `<li>${e(item.label)} <strong>+${e(item.points)}</strong></li>`).join("")}</ul>` : `<span class="muted">No current automatic concern</span>`}</td><td>${badge(risk.level)}${riskExplanationHtml(risk, { compact: true })}</td><td><div class="table-actions"><button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${risk.pupil?.id}">Dashboard</button><button class="btn btn-primary btn-sm" data-action="review-risk" data-id="${risk.pupil?.id}">Review</button></div></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No pupils currently flagged.</td></tr>`}</tbody></table></div>`;
 }
 
 function renderHeadClasses() {
@@ -1075,6 +1212,45 @@ function modalAddAssessment() {
   openModal("Add assessment result", `<form data-form="add-assessment" class="form-grid" data-grade-calculator><div class="field"><label>Class</label><select name="classId" required data-form-class>${selectOptions(classes,cls?.id)}</select></div><div class="field"><label>Pupil</label><select name="pupilId" required data-form-pupil>${classPupilOptions(cls?.id)}</select></div><div class="field full"><label>Assessment name</label><input name="name" required placeholder="National 5 prelim"></div><div class="field"><label>Topic or skill</label><input name="topic" required></div><div class="field"><label>Date</label><input type="date" name="date" value="${todayInput()}" required></div><div class="field"><label>Score</label><input type="number" step="0.5" min="0" name="score" required data-score></div><div class="field"><label>Maximum score</label><input type="number" step="0.5" min="0.5" name="maxScore" required data-max-score></div><div class="field full"><div class="alert alert-info" data-grade-preview>Enter the mark and total. The percentage and grade will be calculated automatically.</div><span class="field-help">A1 85%+ · A2 70–84% · B3 65–69% · B4 60–64% · C5 55–59% · C6 50–54% · D7 45–49% · D8 40–44% · 39% and below No Award.</span></div><div class="form-actions full"><button class="btn btn-primary">Save result</button></div></form>`);
 }
 
+function modalStartFeedbackSession() {
+  const classes = classesVisibleToProfile();
+  const cls = byId(classes, state.selectedClassId) || classes[0];
+  if (!cls) return toast("Create or join a class before starting a feedback session.", "error");
+  openModal("Start live feedback session", `<form data-form="start-feedback-session" class="form-grid"><div class="field full"><label>Class</label><select name="classId" required>${selectOptions(classes, cls.id)}</select></div><div class="field"><label>Feedback type</label><select name="feedbackType" required>${feedbackTypeOptions("Prelim")}</select></div><div class="field"><label>Date</label><input type="date" name="date" value="${todayInput()}" required></div><div class="field full"><label>Assessment or activity title</label><input name="title" required placeholder="For example: Programming prelim feedback"></div><div class="field"><label>Topic or skill</label><input name="skill" required placeholder="For example: Programming"></div><div class="field"><label>Paper, section or component <span class="muted">(optional)</span></label><input name="assessmentComponent" placeholder="For example: Paper 1"></div><div class="field full"><label>Instructions for pupils <span class="muted">(optional)</span></label><textarea name="instructions" placeholder="For example: Use your marked paper and record one precise mistake."></textarea></div><div class="full alert alert-info">Pupils in this class will see the session with the class, title, topic and feedback type already completed. Their drafts will appear live as they autosave.</div><div class="form-actions full"><button class="btn btn-primary">Start session</button></div></form>`);
+}
+
+function modalViewFeedbackSession(sessionId) {
+  const session = byId(state.data.feedbackSessions, sessionId);
+  if (!session) return toast("Feedback session not found.", "error");
+  const stats = feedbackSessionStats(session);
+  const rows = stats.pupils.map((pupil) => {
+    const record = sortByDateDesc(stats.records.filter((item) => item.pupilId === pupil.id), "updatedAt")[0];
+    const active = record?.status === "draft" && new Date(record.autosavedAt || record.updatedAt || 0).getTime() >= Date.now() - 5 * 60 * 1000;
+    const status = !record ? "Not started" : record.status === "draft" ? (active ? "Active now" : "Draft saved") : "Submitted";
+    return `<tr><td><strong>${e(pupil.displayName)}</strong></td><td>${badge(status)}</td><td>${record ? dateFmt(record.autosavedAt || record.updatedAt || record.submittedAt, { hour: "2-digit", minute: "2-digit" }) : "—"}</td><td>${record ? badge(record.trafficLight || "Amber") : "—"}</td><td>${record ? `<button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${e(record.id)}">View</button>` : ""}</td></tr>`;
+  }).join("");
+  openModal(session.title, `<div class="timeline-meta">${badge(session.status)} ${badge(session.feedbackType)}</div><p>${e(getClassName(session.classId))} · ${e(session.skill)} · ${dateFmt(session.date)}</p>${session.instructions ? `<div class="alert alert-info">${e(session.instructions)}</div>` : ""}<div class="grid grid-4" style="margin-top:16px">${kpi("✓", "Submitted", stats.submitted.length)}${kpi("◉", "Active now", stats.activeNow.length)}${kpi("✎", "Drafts", stats.drafts.length)}${kpi("—", "Not started", stats.notStarted.length)}</div><div class="table-wrap" style="margin-top:18px"><table><thead><tr><th>Pupil</th><th>Status</th><th>Last activity</th><th>Confidence</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="empty">No pupils are linked to this class.</td></tr>`}</tbody></table></div><div class="form-actions"><button class="btn btn-ghost" data-action="copy-incomplete-session" data-id="${e(session.id)}">Copy incomplete list</button>${session.status === "open" ? `<button class="btn btn-secondary" data-action="close-feedback-session" data-id="${e(session.id)}">Close session</button>` : `<button class="btn btn-secondary" data-action="reopen-feedback-session" data-id="${e(session.id)}">Reopen session</button>`}</div>`);
+}
+
+function findImprovementItem(itemId, feedbackId = "") {
+  const stored = byId(state.data.improvementBank || [], itemId) || (state.data.improvementBank || []).find((item) => feedbackId && item.feedbackId === feedbackId);
+  if (stored) return { ...stored, stored: true };
+  return improvementItemsForPupil().find((item) => item.id === itemId || (feedbackId && item.feedbackId === feedbackId)) || null;
+}
+
+function modalManageImprovement(itemId, feedbackId = "") {
+  const item = findImprovementItem(itemId, feedbackId);
+  if (!item) return toast("Improvement item not found.", "error");
+  openModal("Update improvement item", `<form data-form="manage-improvement" class="form-grid"><input type="hidden" name="itemId" value="${e(item.stored ? item.id : "")}"><input type="hidden" name="feedbackId" value="${e(item.feedbackId || feedbackId)}"><div class="field full"><label>Topic</label><input name="topic" value="${e(item.topic || "")}" required></div><div class="field full"><label>Mistake or issue to remember</label><textarea name="mistake" required>${e(item.mistake || "")}</textarea></div><div class="field full"><label>What I will do instead</label><textarea name="improvementPlan" required>${e(item.improvementPlan || "")}</textarea></div><div class="field"><label>Status</label><select name="status"><option ${item.status === "New" ? "selected" : ""}>New</option><option ${item.status === "Practising" ? "selected" : ""}>Practising</option><option ${item.status === "Improved" ? "selected" : ""}>Improved</option><option ${item.status === "Secure" ? "selected" : ""}>Secure</option><option ${item.status === "Needs revisiting" ? "selected" : ""}>Needs revisiting</option></select></div><div class="field"><label>Confidence</label><select name="confidence"><option ${item.confidence === "Green" ? "selected" : ""}>Green</option><option ${item.confidence === "Amber" ? "selected" : ""}>Amber</option><option ${item.confidence === "Red" ? "selected" : ""}>Red</option></select></div><div class="field full"><label>Evidence of improvement <span class="muted">(optional)</span></label><textarea name="evidence" placeholder="For example: corrected the answer and completed two similar questions.">${e(item.evidence || "")}</textarea></div><div class="field full checkbox-row"><label><input type="checkbox" name="pinned" ${item.pinned ? "checked" : ""}> Pin this item near the top of my bank</label></div><div class="form-actions full"><button class="btn btn-primary">Save improvement</button></div></form>`);
+}
+
+function modalRiskReview(pupilId, classId = "") {
+  const pupil = byId(state.data.users, pupilId);
+  if (!pupil) return toast("Pupil not found.", "error");
+  const risk = atRiskInfo(pupilId, classId || null);
+  openModal(`Review support indicator — ${pupil.displayName}`, `<form data-form="review-risk" class="form-grid"><input type="hidden" name="pupilId" value="${e(pupilId)}"><input type="hidden" name="classId" value="${e(classId)}"><input type="hidden" name="calculatedLevel" value="${e(risk.calculatedLevel)}"><div class="field full">${riskExplanationHtml(risk)}</div><div class="field full"><label>Teacher-reviewed concern level</label><select name="selectedLevel" required><option value="Low" ${risk.level === "Low" ? "selected" : ""}>Low</option><option value="Medium" ${risk.level === "Medium" ? "selected" : ""}>Medium</option><option value="High" ${risk.level === "High" ? "selected" : ""}>High</option></select><span class="field-help">The calculated level remains visible. This records professional context rather than changing the algorithm.</span></div><div class="field full"><label>Reason for the decision</label><textarea name="reason" required placeholder="For example: recent absence explains the missing work; review after catch-up week.">${e(risk.override?.reason || "")}</textarea></div><div class="field"><label>Review date</label><input type="date" name="reviewDate" value="${e(risk.override?.reviewDate || "")}" required></div><div class="field"><label>Decision type</label><select name="decision"><option value="confirm">Confirm calculated concern</option><option value="reduce" ${risk.override?.decision === "reduce" ? "selected" : ""}>Reduce concern</option><option value="increase" ${risk.override?.decision === "increase" ? "selected" : ""}>Increase concern</option><option value="dismiss" ${risk.override?.decision === "dismiss" ? "selected" : ""}>Temporarily dismiss</option><option value="reviewed" ${risk.override?.decision === "reviewed" ? "selected" : ""}>Mark reviewed</option></select></div><div class="form-actions full"><button class="btn btn-primary">Save professional review</button></div></form>`);
+}
+
 function modalAddFeedback() {
   const classes = classesVisibleToProfile();
   const cls = byId(classes,state.selectedClassId)||classes[0];
@@ -1087,6 +1263,8 @@ function richEditor(field, label, value = "", placeholder = "") {
     <div class="rich-editor-shell">
       <div class="rich-toolbar" role="toolbar" aria-label="Text formatting">
         <button type="button" class="format-button" data-editor-command="bold" title="Bold selected text"><strong>B</strong></button>
+        <button type="button" class="format-button list-format" data-editor-command="insertUnorderedList" title="Bulleted list" aria-label="Bulleted list">• List</button>
+        <button type="button" class="format-button list-format" data-editor-command="insertOrderedList" title="Numbered list" aria-label="Numbered list">1. List</button>
         <span class="toolbar-label">Highlight</span>
         <button type="button" class="highlight-button highlight-yellow" data-editor-command="highlight" data-colour="#fff3a3" aria-label="Yellow highlight"></button>
         <button type="button" class="highlight-button highlight-green" data-editor-command="highlight" data-colour="#d3f5d5" aria-label="Green highlight"></button>
@@ -1099,32 +1277,36 @@ function richEditor(field, label, value = "", placeholder = "") {
   </div>`;
 }
 
-function modalPupilAddFeedback(recordId = null) {
+function modalPupilAddFeedback(recordId = null, sessionId = null) {
   const memberships = (state.data.memberships || []).filter((membership) => membership.userId === state.profile.id && membership.active !== false && (!state.selectedSubjectId || membership.subjectId === state.selectedSubjectId));
   const classes = memberships.map((membership) => byId(state.data.classes, membership.classId)).filter(Boolean);
   const draft = recordId ? byId(state.data.feedbackRecords, recordId) : null;
-  const cls = byId(classes, draft?.classId) || classes[0];
+  const session = sessionId ? byId(state.data.feedbackSessions, sessionId) : (draft?.sessionId ? byId(state.data.feedbackSessions, draft.sessionId) : null);
+  const cls = byId(classes, draft?.classId || session?.classId) || classes[0];
   if (!cls) {
     toast("You need to be linked to a class before adding feedback.", "error");
     return;
   }
 
-  const selectedType = feedbackTypes[draft?.feedbackType] ? draft.feedbackType : "Prelim";
+  const selectedType = feedbackTypes[draft?.feedbackType || session?.feedbackType] ? (draft?.feedbackType || session?.feedbackType) : "Prelim";
   const savedLabel = draft?.autosavedAt || draft?.updatedAt ? `Saved ${dateFmt(draft.autosavedAt || draft.updatedAt, { hour: "2-digit", minute: "2-digit" })}` : "Not saved yet";
-  openModal(draft ? "Continue feedback draft" : "New feedback record", `<form data-form="pupil-feedback-editor" data-feedback-editor class="form-grid" novalidate>
+  openModal(draft ? "Continue feedback draft" : session ? session.title : "New feedback record", `<form data-form="pupil-feedback-editor" data-feedback-editor class="form-grid" novalidate>
     <input type="hidden" name="recordId" value="${e(draft?.id || "")}">
-    <input type="hidden" name="lockedClassId" value="${e(draft?.classId || "")}">
+    <input type="hidden" name="sessionId" value="${e(session?.id || draft?.sessionId || "")}">
+    <input type="hidden" name="sessionFeedbackType" value="${e(session?.feedbackType || draft?.feedbackType || "")}">
+    <input type="hidden" name="lockedClassId" value="${e(draft?.classId || session?.classId || "")}">
     <div class="full autosave-status" data-autosave-status data-state="${draft ? "saved" : "idle"}">
       <span class="autosave-dot"></span><div><strong>${e(savedLabel)}</strong><small>Your draft saves automatically and can be continued another day.</small></div>
     </div>
-    <div class="field full"><label>Class and subject</label><select name="classId" required data-feedback-class ${draft ? "disabled" : ""}>${selectOptions(classes, cls.id)}</select></div>
-    <div class="field"><label>Type of feedback</label><select name="feedbackType" required data-feedback-type>${feedbackTypeOptions(selectedType)}</select></div>
-    <div class="field"><label>Date feedback was received</label><input type="date" name="date" value="${e(draft?.date || todayInput())}" required></div>
-    <div class="field full"><label data-feedback-title-label>Feedback title</label><input name="assessmentName" value="${e(draft?.assessmentName || "")}" data-feedback-title placeholder=""></div>
-    <div class="field full"><label>Topic, skill or area</label><input name="skill" value="${e(draft?.skill || "")}" required placeholder="For example: SQL, evaluation or explaining answers precisely"></div>
+    ${session?.instructions ? `<div class="full alert alert-info"><strong>Teacher instructions</strong><p>${e(session.instructions)}</p></div>` : ""}
+    <div class="field full"><label>Class and subject</label><select name="classId" required data-feedback-class ${draft || session ? "disabled" : ""}>${selectOptions(classes, cls.id)}</select></div>
+    <div class="field"><label>Type of feedback</label><select name="feedbackType" required data-feedback-type ${session ? "disabled" : ""}>${feedbackTypeOptions(selectedType)}</select></div>
+    <div class="field"><label>Date feedback was received</label><input type="date" name="date" value="${e(draft?.date || session?.date || todayInput())}" required ${session ? "readonly" : ""}></div>
+    <div class="field full"><label data-feedback-title-label>Feedback title</label><input name="assessmentName" value="${e(draft?.assessmentName || session?.title || "")}" data-feedback-title placeholder="" ${session ? "readonly" : ""}></div>
+    <div class="field full"><label>Topic, skill or area</label><input name="skill" value="${e(draft?.skill || session?.skill || "")}" required placeholder="For example: SQL, evaluation or explaining answers precisely" ${session ? "readonly" : ""}></div>
     <div class="field full" data-prelim-extra>
       <label>Paper, section or component <span class="muted">(optional)</span></label>
-      <input name="assessmentComponent" value="${e(draft?.assessmentComponent || "")}" placeholder="For example: Paper 1, Section 2 or practical task">
+      <input name="assessmentComponent" value="${e(draft?.assessmentComponent || session?.assessmentComponent || "")}" placeholder="For example: Paper 1, Section 2 or practical task" ${session ? "readonly" : ""}>
     </div>
     <div class="field full" data-result-fields>
       <div class="result-grid">
@@ -1208,7 +1390,8 @@ function readFeedbackEditor(form, final = false) {
   const selectedClassId = data.lockedClassId || data.classId;
   const cls = byId(state.data.classes, selectedClassId);
   if (!cls) throw new Error("Choose a valid class and subject.");
-  const config = feedbackTypes[data.feedbackType] || feedbackTypes.Other;
+  const selectedFeedbackType = data.feedbackType || data.sessionFeedbackType || "Other";
+  const config = feedbackTypes[selectedFeedbackType] || feedbackTypes.Other;
   const strengthHtml = sanitiseRichHtml(form.querySelector('[data-rich-field="strengthHtml"]')?.innerHTML || "");
   const nextStepHtml = sanitiseRichHtml(form.querySelector('[data-rich-field="nextStepHtml"]')?.innerHTML || "");
   const strength = plainTextFromHtml(strengthHtml);
@@ -1232,8 +1415,9 @@ function readFeedbackEditor(form, final = false) {
     pupilId: state.profile.id,
     classId: selectedClassId,
     subjectId: cls.subjectId,
-    teacherId: cls.teacherIds?.[0] || "",
-    feedbackType: data.feedbackType,
+    teacherId: (data.sessionId ? byId(state.data.feedbackSessions, data.sessionId)?.createdBy : "") || cls.teacherIds?.[0] || "",
+    sessionId: data.sessionId || "",
+    feedbackType: selectedFeedbackType,
     assessmentName: data.assessmentName?.trim() || "Untitled feedback",
     assessmentComponent: data.assessmentComponent?.trim() || "",
     date: data.date || todayInput(),
@@ -1255,6 +1439,39 @@ function readFeedbackEditor(form, final = false) {
     autosavedAt: new Date().toISOString(),
     submittedAt: final ? new Date().toISOString() : null
   };
+}
+
+async function syncImprovementBankItem(recordId, payload, { preserveProgress = true } = {}) {
+  if (!recordId || !payload?.pupilId || !payload?.nextStep) return null;
+  const existing = (state.data?.improvementBank || []).find((item) => item.feedbackId === recordId);
+  const base = {
+    feedbackId: recordId,
+    pupilId: payload.pupilId,
+    classId: payload.classId,
+    subjectId: payload.subjectId,
+    title: payload.assessmentName || payload.skill || "Feedback item",
+    topic: payload.skill || "Other",
+    mistake: payload.nextStep,
+    mistakeHtml: payload.nextStepHtml || "",
+    confidence: payload.trafficLight || "Amber",
+    dateIdentified: payload.date || todayInput()
+  };
+  if (existing) {
+    const changes = preserveProgress ? base : { ...base, improvementPlan: payload.nextStep, status: "New", pinned: false, evidence: "" };
+    await updateSchoolEntity(state.profile.schoolId, "improvementBank", existing.id, changes);
+    Object.assign(existing, changes, { updatedAt: new Date().toISOString() });
+    return existing;
+  }
+  const created = await createSchoolEntity(state.profile.schoolId, "improvementBank", {
+    ...base,
+    improvementPlan: payload.nextStep,
+    status: payload.status === "closed" ? "Improved" : "New",
+    pinned: false,
+    evidence: ""
+  });
+  state.data.improvementBank = state.data.improvementBank || [];
+  state.data.improvementBank.push(created);
+  return created;
 }
 
 async function persistPupilFeedback(form, final = false) {
@@ -1299,6 +1516,7 @@ async function persistPupilFeedback(form, final = false) {
       await updateSchoolEntity(state.profile.schoolId, "feedbackRecords", recordId, { assessmentId });
     }
   }
+  if (final) await syncImprovementBankItem(recordId, payload);
   return recordId;
 }
 
@@ -1384,12 +1602,13 @@ function modalPupilDashboard(pupilId) {
   const risk = atRiskInfo(pupilId);
   const recurring = skillCountsForPupil(pupilId).filter((item) => item.count > 1);
   const overallAverage = assessmentAverage(pupilId);
-  openModal(`${pupil.displayName} — pupil dashboard`, `<div class="grid grid-4">${kpi("↗", "Average", overallAverage.grade, overallAverage.count ? formatPercent(overallAverage.percentage) : "No results")}${kpi("◎", "Target", risk.targetGrade || memberships[0]?.targetGrade || "—")}${kpi("✎", "Open loops", openFeedbackCount(pupilId))}${kpi("⚑", "Risk", risk.level)}</div><div class="alert ${risk.level === "High" ? "alert-danger" : risk.level === "Medium" ? "alert-warning" : "alert-success"}" style="margin-top:16px">${e(risk.reasons.join(", ") || "No current risk indicators. One grade band below target is treated as close to target.")}</div>${subjectIds.map((subjectId) => {
+  const improvementItems = improvementItemsForPupil(pupilId);
+  openModal(`${pupil.displayName} — pupil dashboard`, `<div class="grid grid-4">${kpi("↗", "Average", overallAverage.grade, overallAverage.count ? formatPercent(overallAverage.percentage) : "No results")}${kpi("◎", "Target", risk.targetGrade || memberships[0]?.targetGrade || "—")}${kpi("✎", "Open loops", openFeedbackCount(pupilId))}${kpi("⚑", "Support indicator", risk.level, `Calculated ${risk.calculatedLevel}`)}</div><div class="alert ${risk.level === "High" ? "alert-danger" : risk.level === "Medium" ? "alert-warning" : "alert-success"}" style="margin-top:16px">${riskExplanationHtml(risk)}</div>${subjectIds.map((subjectId) => {
     const membership = memberships.find((item) => item.subjectId === subjectId) || {};
     const list = state.data.assessments.filter((assessment) => assessment.pupilId === pupilId && assessment.subjectId === subjectId && officialAssessment(assessment));
     const average = assessmentAverage(pupilId, { subjectId });
     return `<section style="margin-top:20px"><div class="card-head"><div><h3>${e(getSubjectName(subjectId))}</h3><p>Average ${average.count ? `${formatPercent(average.percentage)} · ${e(average.grade)}` : "not yet available"}</p></div>${badge(`Target ${membership.targetGrade || "—"}`)}</div><div class="chart-wrap">${gradeChartSvg(list, membership.targetGrade)}</div></section>`;
-  }).join("")}<div class="grid grid-2"><section><h3>Recurring themes</h3>${recurring.length ? miniBarSvg(recurring, "count", "skill") : `<p class="muted">No repeated feedback theme yet.</p>`}</section><section><h3>Current feedback</h3><div class="timeline">${feedback.slice(0, 5).map(feedbackTimelineItem).join("")}</div></section></div><div class="form-actions"><button class="btn btn-ghost" data-action="set-target" data-id="${pupilId}">Set target grade</button><button class="btn btn-secondary" data-action="add-intervention" data-id="${pupilId}">Add intervention</button>${pupil.authProvider === "google" ? `<span class="badge badge-blue">Uses Google sign-in</span>` : `<button class="btn btn-ghost" data-action="reset-pupil-password" data-id="${pupilId}" data-email="${e(pupil.email)}">Send password reset</button>`}</div>`);
+  }).join("")}<div class="grid grid-2"><section><h3>Recurring themes</h3>${recurring.length ? miniBarSvg(recurring, "count", "skill") : `<p class="muted">No repeated feedback theme yet.</p>`}</section><section><h3>Current feedback</h3><div class="timeline">${feedback.slice(0, 5).map(feedbackTimelineItem).join("")}</div></section></div><section style="margin-top:20px"><div class="card-head"><div><h3>Improvement bank</h3><p>Structured mistakes, plans and evidence recorded by the pupil.</p></div>${badge(`${improvementItems.length} item${improvementItems.length === 1 ? "" : "s"}`)}</div><div class="compact-improvement-list">${improvementItems.slice(0, 5).map((item) => `<div><strong>${e(item.topic)}</strong><span>${badge(item.status)} ${item.pinned ? badge("Pinned") : ""}</span><p>${e(item.improvementPlan || item.mistake)}</p></div>`).join("") || `<p class="muted">No improvement-bank items yet.</p>`}</div></section><div class="form-actions"><button class="btn btn-primary" data-action="review-risk" data-id="${pupilId}">Review support indicator</button><button class="btn btn-ghost" data-action="set-target" data-id="${pupilId}">Set target grade</button><button class="btn btn-secondary" data-action="add-intervention" data-id="${pupilId}">Add intervention</button>${pupil.authProvider === "google" ? `<span class="badge badge-blue">Uses Google sign-in</span>` : `<button class="btn btn-ghost" data-action="reset-pupil-password" data-id="${pupilId}" data-email="${e(pupil.email)}">Send password reset</button>`}</div>`);
 }
 
 function skillCountsForPupil(pupilId) {
@@ -1411,6 +1630,11 @@ function modalSetTarget(pupilId) {
 
 function modalIntervention(pupilId) {
   openModal("Add intervention", `<form data-form="add-intervention" class="form-grid"><input type="hidden" name="pupilId" value="${e(pupilId)}"><div class="field"><label>Concern area</label><input name="concernArea" required></div><div class="field"><label>Concern level</label><select name="concernLevel"><option>Medium</option><option>High</option><option>Low</option></select></div><div class="field full"><label>Action</label><textarea name="action" required></textarea></div><div class="field"><label>Review date</label><input type="date" name="reviewDate" required></div><div class="form-actions full"><button class="btn btn-primary">Create intervention</button></div></form>`);
+}
+
+function modalPdfOptions() {
+  const subjects = pupilSubjects();
+  openModal("Save learning record as PDF", `<form data-form="print-portfolio" class="form-grid"><div class="field full"><label>What should the PDF contain?</label><select name="mode"><option value="complete">Complete learning record</option><option value="feedback">Feedback and actions only</option><option value="improvements">Mistake and improvement bank only</option><option value="assessments">Assessment history only</option></select></div><div class="field full"><label>Subject</label><select name="subjectId"><option value="all">All subjects</option>${subjects.map((subject) => `<option value="${e(subject.id)}">${e(subject.name)}</option>`).join("")}</select></div><div class="field"><label>From date <span class="muted">(optional)</span></label><input type="date" name="dateFrom"></div><div class="field"><label>To date <span class="muted">(optional)</span></label><input type="date" name="dateTo"></div><div class="full alert alert-info">Bold text, highlights, bullet points, numbered lists and paragraph spacing will be kept. Confidential teacher-only notes are excluded.</div><div class="form-actions full"><button class="btn btn-primary">Open PDF preview</button></div></form>`);
 }
 
 function modalEmailChange() {
@@ -1519,24 +1743,24 @@ function applyRichFormatting(formatButton) {
   if (currentSelection?.rangeCount) {
     const currentRange = currentSelection.getRangeAt(0);
     const currentEditor = richEditorForRange(currentRange);
-    if (currentEditor && !currentRange.collapsed) {
+    if (currentEditor) {
       editor = currentEditor;
       range = currentRange.cloneRange();
     }
   }
 
-  if (!range && lastRichSelection?.editor?.isConnected && !lastRichSelection.range.collapsed) {
+  if (!range && lastRichSelection?.editor?.isConnected) {
     editor = lastRichSelection.editor;
     range = lastRichSelection.range.cloneRange();
   }
 
-  if (!range && shellEditor?.__feedbackLoopSelection && !shellEditor.__feedbackLoopSelection.collapsed) {
+  if (!range && shellEditor?.__feedbackLoopSelection) {
     editor = shellEditor;
     range = shellEditor.__feedbackLoopSelection.cloneRange();
   }
 
-  if (!editor || !range || range.collapsed || !editor.contains(range.commonAncestorContainer)) {
-    toast('Select the words you want to format first.', 'error');
+  if (!editor || !range || !editor.contains(range.commonAncestorContainer)) {
+    toast('Place the cursor in the feedback box first.', 'error');
     return;
   }
 
@@ -1546,32 +1770,44 @@ function applyRichFormatting(formatButton) {
   selection.addRange(range);
 
   const command = formatButton.dataset.editorCommand;
+  const listCommand = command === 'insertUnorderedList' || command === 'insertOrderedList';
   let selectedRange = null;
 
-  if (command === 'removeFormat') {
-    const fragment = range.extractContents();
-    removeFormattingFromFragment(fragment);
-    const insertedNodes = [...fragment.childNodes];
-    range.insertNode(fragment);
-    selectedRange = selectInsertedContent(selection, null, insertedNodes);
+  if (listCommand) {
+    // Browser list insertion is used only for block-list creation. The saved
+    // HTML is still passed through FeedbackLoop's strict allow-list sanitizer.
+    document.execCommand(command, false);
+    rememberRichSelection();
   } else {
-    const wrapper = command === 'bold'
-      ? document.createElement('strong')
-      : document.createElement('span');
-    if (command === 'highlight') wrapper.style.backgroundColor = formatButton.dataset.colour || '#fff3a3';
-    wrapper.append(range.extractContents());
-    range.insertNode(wrapper);
-    selectedRange = selectInsertedContent(selection, wrapper);
-  }
+    if (range.collapsed) {
+      toast('Select the words you want to format first.', 'error');
+      return;
+    }
+    if (command === 'removeFormat') {
+      const fragment = range.extractContents();
+      removeFormattingFromFragment(fragment);
+      const insertedNodes = [...fragment.childNodes];
+      range.insertNode(fragment);
+      selectedRange = selectInsertedContent(selection, null, insertedNodes);
+    } else {
+      const wrapper = command === 'bold'
+        ? document.createElement('strong')
+        : document.createElement('span');
+      if (command === 'highlight') wrapper.style.backgroundColor = formatButton.dataset.colour || '#fff3a3';
+      wrapper.append(range.extractContents());
+      range.insertNode(wrapper);
+      selectedRange = selectInsertedContent(selection, wrapper);
+    }
 
-  if (selectedRange) {
-    const saved = selectedRange.cloneRange();
-    editor.__feedbackLoopSelection = saved;
-    lastRichSelection = { editor, range: saved };
+    if (selectedRange) {
+      const saved = selectedRange.cloneRange();
+      editor.__feedbackLoopSelection = saved;
+      lastRichSelection = { editor, range: saved };
+    }
   }
 
   editor.normalize();
-  editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'formatBold' }));
+  editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: listCommand ? 'insertList' : 'formatBold' }));
   const form = editor.closest('form[data-feedback-editor]');
   if (form) scheduleFeedbackAutosave(form);
 }
@@ -1689,6 +1925,34 @@ app.addEventListener("click", async (event) => {
   if (action === "class-invite") return modalCreateInvite({role:"pupil",classId:id});
   if (action === "manage-staff-roles") return modalManageStaffRoles(id);
   if (action === "assign-teacher") return modalAssignTeacher(id);
+  if (action === "start-feedback-session") return modalStartFeedbackSession();
+  if (action === "open-feedback-session") return modalPupilAddFeedback(null, id);
+  if (action === "view-feedback-session") return modalViewFeedbackSession(id);
+  if (["close-feedback-session", "reopen-feedback-session", "archive-feedback-session"].includes(action)) {
+    const status = action === "close-feedback-session" ? "closed" : action === "reopen-feedback-session" ? "open" : "archived";
+    await withBusy(actionEl, async()=>{await updateSchoolEntity(state.profile.schoolId, "feedbackSessions", id, { status, statusChangedAt: new Date().toISOString(), statusChangedBy: state.profile.id });closeModal();await refresh();toast(status === "open" ? "Feedback session reopened." : status === "closed" ? "Feedback session closed to new starters." : "Feedback session archived.");}); return;
+  }
+  if (action === "copy-incomplete-session") {
+    const session = byId(state.data.feedbackSessions, id);
+    if (!session) return toast("Feedback session not found.", "error");
+    const names = feedbackSessionStats(session).notStarted.map((pupil) => pupil.displayName);
+    const text = names.length ? `${session.title} — not started:\n${names.join("\n")}` : `${session.title} — everyone has started.`;
+    try { await navigator.clipboard.writeText(text); toast(names.length ? "Incomplete pupil list copied." : "Everyone has started this session."); } catch { prompt("Copy this list:", text); }
+    return;
+  }
+  if (action === "manage-improvement") return modalManageImprovement(id, actionEl.dataset.feedbackId || "");
+  if (action === "toggle-improvement-pin") {
+    const item = findImprovementItem(id, actionEl.dataset.feedbackId || "");
+    if (!item) return toast("Improvement item not found.", "error");
+    const nextPinned = !item.pinned;
+    if (item.stored) await updateSchoolEntity(state.profile.schoolId, "improvementBank", item.id, { pinned: nextPinned });
+    else {
+      const feedback = byId(state.data.feedbackRecords, item.feedbackId);
+      await createSchoolEntity(state.profile.schoolId, "improvementBank", { pupilId: state.profile.id, feedbackId: item.feedbackId, classId: item.classId, subjectId: item.subjectId, title: item.title, topic: item.topic, mistake: item.mistake, mistakeHtml: item.mistakeHtml, improvementPlan: item.improvementPlan, status: item.status, confidence: item.confidence, evidence: item.evidence || "", pinned: nextPinned, dateIdentified: item.dateIdentified || feedback?.date || todayInput() });
+    }
+    await refresh(); state.route = "improvements"; renderShell(); return;
+  }
+  if (action === "review-risk") return modalRiskReview(id, actionEl.dataset.classId || "");
   if (action === "add-assessment") return modalAddAssessment();
   if (action === "add-feedback") return modalAddFeedback();
   if (action === "pupil-add-feedback") return modalPupilAddFeedback();
@@ -1734,12 +1998,14 @@ app.addEventListener("click", async (event) => {
     await withBusy(actionEl,async()=>{await completeTransfer(state.profile,req);toast("School transfer completed.");await refresh();}); return;
   }
   if (action === "select-class") { state.selectedClassId=id; state.route="overview"; renderShell(); return; }
-  if (["export-json","export-csv","print-report"].includes(action)) {
-    await withBusy(actionEl,async()=>{const portfolio=await loadPupilPortfolio(state.profile);if(action==="export-json")downloadPortfolioJson(state.profile,portfolio);if(action==="export-csv")downloadPortfolioCsv(state.profile,portfolio);if(action==="print-report")printPortfolioReport(state.profile,portfolio);}); return;
+  if (action === "print-report") return modalPdfOptions();
+  if (["export-json","export-csv"].includes(action)) {
+    await withBusy(actionEl,async()=>{const portfolio=await loadPupilPortfolio(state.profile);if(action==="export-json")downloadPortfolioJson(state.profile,portfolio);if(action==="export-csv")downloadPortfolioCsv(state.profile,portfolio);}); return;
   }
 });
 
 app.addEventListener("input", (event) => {
+  if (event.target.matches("[data-improvement-search]")) { state.improvementSearch = event.target.value; renderShell(); const input = document.querySelector("[data-improvement-search]"); if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); } return; }
   const form = event.target.closest("form[data-feedback-editor]");
   if (form) {
     if (event.target.matches("[data-score], [data-max-score]")) updateGradePreview(form);
@@ -1768,6 +2034,8 @@ app.addEventListener("change", async (event) => {
     });
     return;
   }
+  if (event.target.matches("[data-improvement-status-filter]")) { state.improvementStatusFilter = event.target.value; renderShell(); return; }
+  if (event.target.matches("[data-improvement-topic-filter]")) { state.improvementTopicFilter = event.target.value; renderShell(); return; }
   if (event.target.matches("[data-subject-select]")) { state.selectedSubjectId=event.target.value; renderShell(); return; }
   if (event.target.matches("[data-class-select]")) { state.selectedClassId=event.target.value; renderShell(); return; }
   if (event.target.matches("[data-migration-school], [data-migration-department]")) {
@@ -1819,6 +2087,7 @@ app.addEventListener("submit", async (event) => {
         toast("Feedback added to your learning record.");
         break;
       }
+      case "print-portfolio": { const portfolio = await loadPupilPortfolio(state.profile); printPortfolioReport(state.profile, portfolio, data); closeModal(); break; }
       case "signin": { const user=await signIn(data.email,data.password); await initialiseUser(user); break; }
       case "register": { const user=await registerWithInvite(data); await initialiseUser(user); toast("Account created. Check your email for a verification link if requested."); break; }
       case "independent-teacher": { const user=await registerIndependentTeacher(data); await initialiseUser(user); toast("Individual teacher workspace activated."); break; }
@@ -1894,6 +2163,30 @@ app.addEventListener("submit", async (event) => {
         const membership=state.data.memberships.find(m=>m.userId===data.pupilId&&m.classId===data.classId); if(membership)await updateSchoolEntity(state.profile.schoolId,"memberships",membership.id,{currentGrade:data.grade});
         closeModal();await refresh();toast("Assessment result saved.");break;
       }
+      case "start-feedback-session": {
+        const cls = byId(classesVisibleToProfile(), data.classId);
+        if (!cls) throw new Error("Choose one of your classes.");
+        await createSchoolEntity(state.profile.schoolId, "feedbackSessions", { classId: cls.id, subjectId: cls.subjectId, pupilIds: pupilsForClass(cls.id).map((pupil) => pupil.id), title: data.title.trim(), skill: data.skill.trim(), feedbackType: data.feedbackType, assessmentComponent: data.assessmentComponent?.trim() || "", instructions: data.instructions?.trim() || "", date: data.date || todayInput(), status: "open", createdBy: state.profile.id, createdByName: state.profile.displayName });
+        closeModal(); await refresh(); toast("Live feedback session started."); break;
+      }
+      case "manage-improvement": {
+        if (!isPupil()) throw new Error("Only the pupil can update their improvement bank.");
+        const feedback = byId(state.data.feedbackRecords, data.feedbackId);
+        const existing = data.itemId ? byId(state.data.improvementBank, data.itemId) : (state.data.improvementBank || []).find((item) => item.feedbackId === data.feedbackId);
+        const payload = { pupilId: state.profile.id, feedbackId: data.feedbackId || "", classId: feedback?.classId || existing?.classId || "", subjectId: feedback?.subjectId || existing?.subjectId || "", title: feedback?.assessmentName || existing?.title || data.topic, topic: data.topic.trim(), mistake: data.mistake.trim(), mistakeHtml: `<p>${e(data.mistake.trim())}</p>`, improvementPlan: data.improvementPlan.trim(), status: data.status, confidence: data.confidence, evidence: data.evidence?.trim() || "", pinned: formData.has("pinned"), dateIdentified: existing?.dateIdentified || feedback?.date || todayInput() };
+        if (existing) await updateSchoolEntity(state.profile.schoolId, "improvementBank", existing.id, payload);
+        else await createSchoolEntity(state.profile.schoolId, "improvementBank", payload);
+        closeModal(); await refresh(); state.route = "improvements"; toast("Improvement bank updated."); break;
+      }
+      case "review-risk": {
+        if (!isStaff()) throw new Error("Only teaching staff can review support indicators.");
+        const selectedLevel = data.decision === "confirm" ? data.calculatedLevel : data.decision === "dismiss" ? "Low" : data.selectedLevel;
+        const existing = (state.data.riskOverrides || []).filter((item) => item.pupilId === data.pupilId && (item.classId || "") === (data.classId || "") && item.active !== false);
+        for (const item of existing) await updateSchoolEntity(state.profile.schoolId, "riskOverrides", item.id, { active: false, supersededAt: new Date().toISOString(), supersededBy: state.profile.id });
+        await createSchoolEntity(state.profile.schoolId, "riskOverrides", { pupilId: data.pupilId, classId: data.classId || "", calculatedLevel: data.calculatedLevel, selectedLevel, decision: data.decision, reason: data.reason.trim(), reviewDate: data.reviewDate, active: true, createdBy: state.profile.id, createdByName: state.profile.displayName });
+        await writeAuditLog(state.profile.schoolId, { action: "riskIndicatorReviewed", userId: state.profile.id, userName: state.profile.displayName, pupilId: data.pupilId, calculatedLevel: data.calculatedLevel, selectedLevel, reason: data.reason.trim(), reviewDate: data.reviewDate });
+        closeModal(); await refresh(); toast("Professional risk review recorded."); break;
+      }
       case "add-feedback": {
         const cls=byId(state.data.classes,data.classId);
         await createSchoolEntity(state.profile.schoolId,"feedbackRecords",{pupilId:data.pupilId,classId:data.classId,subjectId:cls.subjectId,assessmentName:data.assessmentName,date:data.date,skill:data.skill,feedbackType:data.feedbackType,strength:data.strength,nextStep:data.nextStep,trafficLight:data.trafficLight,status:"open",teacherId:state.profile.id,teacherNotes:data.teacherNotes||""});
@@ -1907,14 +2200,20 @@ app.addEventListener("submit", async (event) => {
         const strength = plainTextFromHtml(strengthHtml);
         const nextStep = plainTextFromHtml(nextStepHtml);
         if (!nextStep) throw new Error("Add what you need to watch out for next time.");
+        const editedPayload = {
+          ...record, strength, strengthHtml, nextStep, nextStepHtml,
+          trafficLight: data.trafficLight || record.trafficLight || "Amber",
+          pupilNote: data.pupilNote?.trim() || ""
+        };
         await updateSchoolEntity(state.profile.schoolId, "feedbackRecords", record.id, {
           strength, strengthHtml, nextStep, nextStepHtml,
-          trafficLight: data.trafficLight || record.trafficLight || "Amber",
-          pupilNote: data.pupilNote?.trim() || "",
+          trafficLight: editedPayload.trafficLight,
+          pupilNote: editedPayload.pupilNote,
           pupilEditedAt: new Date().toISOString(),
           pupilEditCount: Number(record.pupilEditCount || 0) + 1,
           needsTeacherReview: true
         });
+        await syncImprovementBankItem(record.id, editedPayload);
         closeModal(); await refresh(); toast("Your written feedback was updated. The mark and grade were not changed."); break;
       }
       case "edit-feedback-result": {

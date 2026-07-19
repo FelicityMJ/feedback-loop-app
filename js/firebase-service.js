@@ -918,11 +918,12 @@ export async function completeClassMigration(profile, requestId) {
   const sourceClassSnap = await getDoc(doc(db, "schools", request.sourceWorkspaceId, "classes", request.sourceClassId));
   if (!sourceClassSnap.exists()) throw new Error("The original class could not be found.");
   const sourceClass = sourceClassSnap.data();
-  const [memberships, assessments, feedbackRecords, feedbackActions, interventions] = await Promise.all([
+  const [memberships, assessments, feedbackRecords, feedbackActions, improvementBank, interventions] = await Promise.all([
     fetchCollection(["schools", request.sourceWorkspaceId, "memberships"], [where("classId", "==", request.sourceClassId)]),
     fetchCollection(["schools", request.sourceWorkspaceId, "assessments"], [where("classId", "==", request.sourceClassId)]),
     fetchCollection(["schools", request.sourceWorkspaceId, "feedbackRecords"], [where("classId", "==", request.sourceClassId)]),
     fetchCollection(["schools", request.sourceWorkspaceId, "feedbackActions"]),
+    fetchCollection(["schools", request.sourceWorkspaceId, "improvementBank"], [where("classId", "==", request.sourceClassId)]),
     fetchCollection(["schools", request.sourceWorkspaceId, "interventions"], [where("classId", "==", request.sourceClassId)])
   ]);
   const sourceFeedbackIds = new Set(feedbackRecords.map((item) => item.id));
@@ -936,7 +937,7 @@ export async function completeClassMigration(profile, requestId) {
       if (teacherWorkspace.exists() && teacherWorkspace.data().active !== false && hasWorkspaceRole(teacherWorkspace.data(), "teacher")) destinationTeacherIds.push(teacherId);
     } catch (error) { console.warn("Could not check whether a co-teacher has joined the destination school.", teacherId, error); }
   }
-  const phases = ["class", "memberships", "assessments", "feedbackRecords", "feedbackActions", "interventions", "pupilReconnection", "completed"];
+  const phases = ["class", "memberships", "assessments", "feedbackRecords", "feedbackActions", "improvementBank", "interventions", "pupilReconnection", "completed"];
   let phaseIndex = Math.max(0, phases.indexOf(request.migrationPhase || "class"));
   if (request.status === "accepted") {
     await updateDoc(requestRef, { status: "migrating", migrationPhase: phases[phaseIndex], destinationClassId, startedAt: serverTimestamp(), updatedAt: serverTimestamp() });
@@ -964,13 +965,17 @@ export async function completeClassMigration(profile, requestId) {
   }
   if (phaseIndex <= 4) {
     await commitSetOperations(relevantActions.map((item) => ({ ref: doc(db, "schools", request.destinationSchoolId, "feedbackActions", migratedDocId(request.id, item.id)), data: { ...item, feedbackId: migratedDocId(request.id, item.feedbackId), migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } })));
-    await advance("interventions", { copiedActionCount: relevantActions.length });
+    await advance("improvementBank", { copiedActionCount: relevantActions.length });
   }
   if (phaseIndex <= 5) {
+    await commitSetOperations(improvementBank.map((item) => ({ ref: doc(db, "schools", request.destinationSchoolId, "improvementBank", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, feedbackId: item.feedbackId && sourceFeedbackIds.has(item.feedbackId) ? migratedDocId(request.id, item.feedbackId) : item.feedbackId || "", migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } })));
+    await advance("interventions", { copiedImprovementCount: improvementBank.length });
+  }
+  if (phaseIndex <= 6) {
     await commitSetOperations(interventions.map((item) => ({ ref: doc(db, "schools", request.destinationSchoolId, "interventions", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } })));
     await advance("pupilReconnection", { copiedInterventionCount: interventions.length });
   }
-  if (phaseIndex <= 6) {
+  if (phaseIndex <= 7) {
     let reconnectedPupilCount = 0;
     for (const membership of memberships.filter((item) => item.active !== false)) {
       const pupilRef = doc(db, "users", membership.userId);
@@ -1090,13 +1095,19 @@ export async function loadAppData(profile) {
       ]).then(([activeUsers, workspaceUsers]) => [...activeUsers, ...workspaceUsers].filter((item, index, array) => array.findIndex((other) => other.id === item.id) === index))
     : Promise.resolve([profile]);
 
-  const [users, memberships, assessments, feedbackRecords, feedbackActions, interventions, invites, auditLogs] = await Promise.all([
+  const [
+    users, memberships, assessments, feedbackRecords, feedbackActions, interventions,
+    feedbackSessions, improvementBank, riskOverrides, invites, auditLogs
+  ] = await Promise.all([
     usersPromise,
     isPupil ? safeFetch(["schools", schoolId, "memberships"], [memberConstraint]) : safeFetch(["schools", schoolId, "memberships"]),
     isPupil ? safeFetch(["schools", schoolId, "assessments"], [pupilConstraint]) : safeFetch(["schools", schoolId, "assessments"]),
     isPupil ? safeFetch(["schools", schoolId, "feedbackRecords"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackRecords"]),
     isPupil ? safeFetch(["schools", schoolId, "feedbackActions"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackActions"]),
     isPupil ? Promise.resolve([]) : safeFetch(["schools", schoolId, "interventions"]),
+    isPupil ? safeFetch(["schools", schoolId, "feedbackSessions"], [where("pupilIds", "array-contains", profile.id)]) : safeFetch(["schools", schoolId, "feedbackSessions"]),
+    isPupil ? safeFetch(["schools", schoolId, "improvementBank"], [pupilConstraint]) : safeFetch(["schools", schoolId, "improvementBank"]),
+    isPupil ? Promise.resolve([]) : safeFetch(["schools", schoolId, "riskOverrides"]),
     profileAccess.roles.schoolAdmin
       ? safeFetch(["schools", schoolId, "invites"])
       : staff
@@ -1152,6 +1163,9 @@ export async function loadAppData(profile) {
     feedbackRecords,
     feedbackActions,
     interventions,
+    feedbackSessions,
+    improvementBank,
+    riskOverrides,
     invites,
     auditLogs,
     transferRequests: [...transferFrom, ...transferTo].filter((x, i, arr) => arr.findIndex((y) => y.id === x.id) === i),
@@ -1166,18 +1180,19 @@ export async function loadPupilPortfolio(profile) {
   const schoolIds = [...new Set([...(profile.workspaceIds || []), ...(profile.schoolHistoryIds || []), profile.schoolId].filter(Boolean))];
   const portfolio = {
     schools: [], departments: [], subjects: [], classes: [], memberships: [], assessments: [],
-    feedbackRecords: [], feedbackActions: [], interventions: []
+    feedbackRecords: [], feedbackActions: [], improvementBank: [], interventions: []
   };
   for (const schoolId of schoolIds) {
     const schoolSnap = await getDoc(doc(db, "schools", schoolId));
     if (schoolSnap.exists()) portfolio.schools.push(normaliseDoc(schoolSnap));
-    const [subjects, classes, memberships, assessments, feedbackRecords, feedbackActions] = await Promise.all([
+    const [subjects, classes, memberships, assessments, feedbackRecords, feedbackActions, improvementBank] = await Promise.all([
       safeFetch(["schools", schoolId, "subjects"]),
       safeFetch(["schools", schoolId, "classes"]),
       safeFetch(["schools", schoolId, "memberships"], [where("userId", "==", profile.id)]),
       safeFetch(["schools", schoolId, "assessments"], [where("pupilId", "==", profile.id)]),
       safeFetch(["schools", schoolId, "feedbackRecords"], [where("pupilId", "==", profile.id)]),
-      safeFetch(["schools", schoolId, "feedbackActions"], [where("pupilId", "==", profile.id)])
+      safeFetch(["schools", schoolId, "feedbackActions"], [where("pupilId", "==", profile.id)]),
+      safeFetch(["schools", schoolId, "improvementBank"], [where("pupilId", "==", profile.id)])
     ]);
     portfolio.subjects.push(...subjects.map((x) => ({ ...x, schoolId })));
     portfolio.classes.push(...classes.map((x) => ({ ...x, schoolId })));
@@ -1185,6 +1200,7 @@ export async function loadPupilPortfolio(profile) {
     portfolio.assessments.push(...assessments.map((x) => ({ ...x, schoolId })));
     portfolio.feedbackRecords.push(...feedbackRecords.map((x) => ({ ...x, schoolId })));
     portfolio.feedbackActions.push(...feedbackActions.map((x) => ({ ...x, schoolId })));
+    portfolio.improvementBank.push(...improvementBank.map((x) => ({ ...x, schoolId })));
   }
   const dedupeMigrated = (items) => {
     const chosen = new Map();
@@ -1201,6 +1217,7 @@ export async function loadPupilPortfolio(profile) {
   portfolio.assessments = dedupeMigrated(portfolio.assessments);
   portfolio.feedbackRecords = dedupeMigrated(portfolio.feedbackRecords);
   portfolio.feedbackActions = dedupeMigrated(portfolio.feedbackActions);
+  portfolio.improvementBank = dedupeMigrated(portfolio.improvementBank);
   return portfolio;
 }
 

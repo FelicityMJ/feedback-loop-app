@@ -17,8 +17,20 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == uid;
     }
 
+    function hasWorkspaceMembership(schoolId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId)).data.active != false;
+    }
+
     function isCurrentSchool(schoolId) {
       return hasUser() && me().schoolId == schoolId;
+    }
+
+    function isCurrentSchoolAfter(schoolId) {
+      return signedIn()
+        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.schoolId == schoolId;
     }
 
     function isHistoricalSchool(schoolId) {
@@ -29,11 +41,26 @@ service cloud.firestore {
     }
 
     function canReadSchool(schoolId) {
-      return isCurrentSchool(schoolId) || isHistoricalSchool(schoolId);
+      return isCurrentSchool(schoolId) || hasWorkspaceMembership(schoolId) || isHistoricalSchool(schoolId);
+    }
+
+    function isIndividualWorkspaceOwner(schoolId) {
+      return signedIn() && (
+        (isCurrentSchool(schoolId)
+          && exists(/databases/$(database)/documents/schools/$(schoolId))
+          && get(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
+          && get(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid)
+        ||
+        (isCurrentSchoolAfter(schoolId)
+          && existsAfter(/databases/$(database)/documents/schools/$(schoolId))
+          && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
+          && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid)
+      );
     }
 
     function isSchoolAdmin(schoolId) {
-      return isCurrentSchool(schoolId) && me().role == 'schoolAdmin';
+      return (isCurrentSchool(schoolId) && me().role == 'schoolAdmin')
+        || isIndividualWorkspaceOwner(schoolId);
     }
 
     function isDepartmentHead(schoolId) {
@@ -111,25 +138,65 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/transferRequests/$(transferId)).data.status == 'accepted';
     }
 
+    function personalWorkspaceId(uid) {
+      return 'personal-' + uid;
+    }
+
+    function personalTeacherProfile(uid) {
+      return request.resource.data.role == 'teacher'
+        && request.resource.data.schoolId == personalWorkspaceId(uid)
+        && request.resource.data.workspaceOwner == true
+        && request.resource.data.workspaceIds is list
+        && request.resource.data.workspaceIds.size() == 1
+        && request.resource.data.workspaceIds[0] == personalWorkspaceId(uid)
+        && existsAfter(/databases/$(database)/documents/schools/$(personalWorkspaceId(uid)))
+        && getAfter(/databases/$(database)/documents/schools/$(personalWorkspaceId(uid))).data.workspaceType == 'individualTeacher'
+        && getAfter(/databases/$(database)/documents/schools/$(personalWorkspaceId(uid))).data.ownerId == uid
+        && existsAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(personalWorkspaceId(uid)));
+    }
+
+    function workspaceProfileUpdate(uid) {
+      return request.resource.data.schoolId is string
+        && existsAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId))
+        && getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.active != false
+        && request.resource.data.role == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.role
+        && request.resource.data.departmentIds == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.departmentIds
+        && request.resource.data.workspaceOwner == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.workspaceOwner
+        && request.resource.data.workspaceIds is list
+        && request.resource.data.workspaceIds.hasAll(resource.data.workspaceIds)
+        && request.resource.data.workspaceIds.hasAny([request.resource.data.schoolId])
+        && request.resource.data.workspaceIds.size() <= resource.data.workspaceIds.size() + 1;
+    }
+
     match /users/{uid} {
       allow create: if isSelf(uid)
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.schoolId is string
         && request.resource.data.role in ['schoolAdmin', 'departmentHead', 'teacher', 'pupil']
-        && profileMatchesInvite(
-          request.resource.data.schoolId,
-          request.resource.data.inviteCode
+        && (
+          profileMatchesInvite(request.resource.data.schoolId, request.resource.data.inviteCode)
+          || personalTeacherProfile(uid)
         );
 
       allow read: if isSelf(uid)
-        || (hasUser() && me().role in ['schoolAdmin', 'departmentHead', 'teacher']
-          && resource.data.schoolId == me().schoolId);
+        || (hasUser() && isStaff(me().schoolId)
+          && (
+            resource.data.schoolId == me().schoolId
+            || (resource.data.workspaceIds is list && resource.data.workspaceIds.hasAny([me().schoolId]))
+            || exists(/databases/$(database)/documents/users/$(uid)/workspaces/$(me().schoolId))
+          ));
 
       allow update: if (
         isSelf(uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'displayName', 'email', 'photoURL', 'preferences', 'lastSeenAt', 'updatedAt'
+          'displayName', 'email', 'photoURL', 'preferences', 'lastSeenAt', 'authProvider', 'updatedAt'
         ])
+      ) || (
+        isSelf(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'schoolId', 'role', 'departmentIds', 'workspaceOwner', 'workspaceIds', 'inviteCode', 'updatedAt'
+        ])
+        && workspaceProfileUpdate(uid)
       ) || (
         isSelf(uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
@@ -143,12 +210,44 @@ service cloud.firestore {
       ) || isSchoolAdmin(resource.data.schoolId);
 
       allow delete: if isSchoolAdmin(resource.data.schoolId);
+
+      match /workspaces/{schoolId} {
+        allow create: if isSelf(uid)
+          && request.resource.data.uid == uid
+          && request.resource.data.schoolId == schoolId
+          && request.resource.data.active == true
+          && request.resource.data.role in ['schoolAdmin', 'departmentHead', 'teacher', 'pupil']
+          && (
+            (
+              schoolId == personalWorkspaceId(uid)
+              && request.resource.data.role == 'teacher'
+              && request.resource.data.workspaceOwner == true
+              && existsAfter(/databases/$(database)/documents/schools/$(schoolId))
+              && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
+              && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == uid
+            )
+            ||
+            (
+              request.resource.data.workspaceOwner == false
+              && validInvite(schoolId, request.resource.data.inviteCode, request.resource.data.role)
+              && request.resource.data.departmentIds == get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(request.resource.data.inviteCode)).data.departmentIds
+            )
+          );
+
+        allow read: if isSelf(uid) || isStaff(schoolId);
+        allow update: if isSchoolAdmin(schoolId);
+        allow delete: if false;
+      }
     }
 
     match /schools/{schoolId} {
       allow get: if signedIn();
       allow list: if hasUser() && me().role == 'schoolAdmin';
-      allow create: if false; // Create the first school document in Firebase Console.
+      allow create: if signedIn()
+        && schoolId == personalWorkspaceId(request.auth.uid)
+        && request.resource.data.workspaceType == 'individualTeacher'
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.active == true;
       allow update: if isSchoolAdmin(schoolId);
       allow delete: if false;
 

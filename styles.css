@@ -421,3 +421,14 @@ tbody tr:hover { background: #fafbff; }
   .rag-donut { max-width: 230px; }
   .insight-card .card-body { min-height: auto; }
 }
+
+/* V5 account and workspace controls */
+.auth-tabs-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.auth-tabs-three .auth-tab { padding-inline: 7px; font-size: .82rem; }
+.auth-divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: .78rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.auth-divider::before, .auth-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.workspace-switcher { max-width: 250px; }
+@media (max-width: 620px) {
+  .auth-tabs-three { grid-template-columns: 1fr; }
+  .workspace-switcher { max-width: 170px; }
+}

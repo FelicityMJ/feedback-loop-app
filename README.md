@@ -69,3 +69,26 @@ This gives a GitHub Pages address such as:
 Copyright © 2026 Felicity Miller. All rights reserved.
 
 This is proprietary software. See the `LICENSE` file for the full terms.
+
+## V5 account options
+
+FeedbackLoop now supports three entry routes:
+
+1. **Sign in** — for an existing account, using email/password or Google.
+2. **Join with code** — pupils use a class code and teachers use a department code.
+3. **Teacher account** — an individual teacher creates a full private workspace without waiting for a school account.
+
+An individual teacher can later add a school workspace to the same account using a department code. The top-bar workspace selector keeps personal and school data separate.
+
+Pupil accounts use real full names. Email/password pupils can receive a secure password-reset email; Google pupils recover access through their Google account.
+
+## Version 6: continuing accounts and school adoption
+
+- Pupils can join additional classes and subjects from inside their existing account.
+- One pupil login can hold memberships in several independent or school workspaces.
+- Classes can be assigned to several teachers.
+- Individual-workspace owners can create co-teacher class codes.
+- Independently-run classes can be copied into a later school-wide workspace with results, feedback, reflections and interventions preserved.
+- Existing pupils reconnect to the migrated school class with the same account and learner ID.
+
+See `UPDATE-GUIDE-V6.md` and `WORKSPACE-AND-MIGRATION-DESIGN-V6.md`.

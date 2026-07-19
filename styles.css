@@ -432,3 +432,40 @@ tbody tr:hover { background: #fafbff; }
   .auth-tabs-three { grid-template-columns: 1fr; }
   .workspace-switcher { max-width: 170px; }
 }
+
+/* V6 shared-class controls */
+.check-card-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.check-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #dfe4ee);
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.check-card:hover {
+  border-color: #7c5cff;
+}
+
+.check-card input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.check-card span {
+  display: grid;
+  gap: 2px;
+}
+
+.check-card small {
+  color: var(--muted, #687086);
+}

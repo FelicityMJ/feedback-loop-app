@@ -46,15 +46,26 @@ service cloud.firestore {
 
     function isIndividualWorkspaceOwner(schoolId) {
       return signedIn() && (
-        (isCurrentSchool(schoolId)
-          && exists(/databases/$(database)/documents/schools/$(schoolId))
+        (
+          exists(/databases/$(database)/documents/schools/$(schoolId))
           && get(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
-          && get(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid)
+          && get(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid
+          && (
+            isCurrentSchool(schoolId)
+            || (
+              exists(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId))
+              && get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId)).data.workspaceOwner == true
+              && get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId)).data.active != false
+            )
+          )
+        )
         ||
-        (isCurrentSchoolAfter(schoolId)
+        (
+          isCurrentSchoolAfter(schoolId)
           && existsAfter(/databases/$(database)/documents/schools/$(schoolId))
           && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
-          && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid)
+          && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid
+        )
       );
     }
 
@@ -412,6 +423,18 @@ service cloud.firestore {
           && request.resource.data.classIds is list
           && request.resource.data.classIds.size() == 0
         ) || (
+          isIndividualWorkspaceOwner(schoolId)
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.role == 'teacher'
+          && request.resource.data.scopeType == 'classTeacher'
+          && request.resource.data.departmentIds is list
+          && request.resource.data.departmentIds.size() == 1
+          && request.resource.data.classIds is list
+          && request.resource.data.classIds.size() == 1
+          && exists(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0]))
+          && request.resource.data.departmentIds[0] == get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0])).data.departmentId
+          && request.resource.data.subjectId == get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0])).data.subjectId
+        ) || (
           isTeacher(schoolId)
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.role == 'pupil'
@@ -440,6 +463,53 @@ service cloud.firestore {
         allow create: if isStaff(schoolId);
         allow update, delete: if false;
       }
+    }
+
+    match /classMigrationRequests/{migrationId} {
+      allow create: if signedIn()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.sourceWorkspaceId is string
+        && request.resource.data.destinationSchoolId is string
+        && request.resource.data.status == 'requested'
+        && isIndividualWorkspaceOwner(request.resource.data.sourceWorkspaceId)
+        && hasWorkspaceMembership(request.resource.data.destinationSchoolId)
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(request.resource.data.destinationSchoolId))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(request.resource.data.destinationSchoolId)).data.role == 'teacher'
+        && exists(/databases/$(database)/documents/schools/$(request.resource.data.sourceWorkspaceId)/classes/$(request.resource.data.sourceClassId))
+        && exists(/databases/$(database)/documents/schools/$(request.resource.data.destinationSchoolId)/departments/$(request.resource.data.destinationDepartmentId))
+        && exists(/databases/$(database)/documents/schools/$(request.resource.data.destinationSchoolId)/subjects/$(request.resource.data.destinationSubjectId));
+
+      allow read: if signedIn() && (
+        resource.data.createdBy == request.auth.uid
+        || isIndividualWorkspaceOwner(resource.data.sourceWorkspaceId)
+        || isSchoolAdmin(resource.data.destinationSchoolId)
+        || isDepartmentHead(resource.data.destinationSchoolId)
+      );
+
+      allow update: if (
+        resource.data.status == 'requested'
+        && request.resource.data.status in ['accepted', 'declined']
+        && (
+          isSchoolAdmin(resource.data.destinationSchoolId)
+          || leadsDepartment(resource.data.destinationSchoolId, resource.data.destinationDepartmentId)
+        )
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'decidedAt', 'decidedBy', 'updatedAt'
+        ])
+      ) || (
+        signedIn()
+        && resource.data.createdBy == request.auth.uid
+        && isCurrentSchool(resource.data.destinationSchoolId)
+        && resource.data.status == 'accepted'
+        && request.resource.data.status == 'completed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status', 'destinationClassId', 'copiedMembershipCount',
+          'copiedAssessmentCount', 'copiedFeedbackCount',
+          'completedAt', 'updatedAt'
+        ])
+      );
+
+      allow delete: if false;
     }
 
     match /emailChangeRequests/{requestId} {

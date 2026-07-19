@@ -1337,12 +1337,23 @@ async function refresh(message = "Refreshing…") {
   renderShell();
 }
 
-async function withBusy(button, task) {
-  const old = button?.textContent;
-  if (button) { button.disabled = true; button.textContent = "Working…"; }
+async function withBusy(control, task) {
+  const isSelect = control?.tagName === "SELECT";
+  const oldText = isSelect ? null : control?.textContent;
+  if (control) {
+    control.disabled = true;
+    control.setAttribute("aria-busy", "true");
+    if (!isSelect) control.textContent = "Working…";
+  }
   try { await task(); }
   catch (error) { console.error(error); toast(error.message || "Something went wrong.", "error"); }
-  finally { if (button) { button.disabled = false; button.textContent = old; } }
+  finally {
+    if (control) {
+      control.disabled = false;
+      control.removeAttribute("aria-busy");
+      if (!isSelect) control.textContent = oldText;
+    }
+  }
 }
 
 // Rich-text formatting is handled with the Selection and Range APIs rather
@@ -1617,7 +1628,16 @@ app.addEventListener("change", async (event) => {
   }
   if (event.target.matches("[data-workspace-select]")) {
     const select = event.target;
-    await withBusy(select, async()=>{await switchWorkspace(state.profile, select.value);await initialiseUser(state.authUser);toast("Workspace changed.");});
+    const targetWorkspaceId = select.value;
+    if (!targetWorkspaceId) {
+      toast("Please choose a workspace.", "error");
+      return;
+    }
+    await withBusy(select, async()=>{
+      await switchWorkspace(state.profile, targetWorkspaceId);
+      await initialiseUser(state.authUser);
+      toast("Workspace changed.");
+    });
     return;
   }
   if (event.target.matches("[data-subject-select]")) { state.selectedSubjectId=event.target.value; renderShell(); return; }

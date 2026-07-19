@@ -1,38 +1,30 @@
-# FeedbackLoop V6.2
+# FeedbackLoop V6.3
 
 FeedbackLoop is a static GitHub Pages/Firebase school feedback platform built around pupil-entered feedback, teacher class dashboards, department oversight and portable learner histories.
 
-## V6.2 highlights
+## V6.3 — Feedback to Action
 
-- One staff login can hold school-administrator, department-head and teacher permissions in the same school.
-- Staff switch between **My classes**, **Department overview** and **School administration** without separate profiles.
+V6.3 builds on the V6.2 multi-role account and migration foundation. It adds:
+
+- teacher-led **live feedback sessions** with prepared class, title, topic, feedback type and instructions;
+- live counts for submitted, active, draft, not-started and red-confidence pupils;
+- a structured **mistake and improvement bank** with topics, status, confidence, pins and evidence;
+- automatic use of existing feedback as bank items, so no V6.3 data backfill is required;
+- transparent support-indicator points and reasons;
+- teacher professional reviews and overrides that retain the original calculated level;
+- audit records for support-indicator reviews;
+- bulleted and numbered-list formatting alongside bold and four highlight colours;
+- a pupil **Save as PDF** workflow that preserves approved rich formatting;
+- PDF choices for complete record, feedback/actions, improvement bank or assessment history, with subject and date filters.
+
+## V6.2 foundation retained
+
+- One staff login can hold school-administrator, department-head and teacher permissions.
+- Staff switch between **My classes**, **Department overview** and **School administration**.
 - Department heads automatically retain teacher access.
-- School administrators can manage staff permissions, school setup, internal codes, licences, migration approvals and audit records.
-- Initial school and independent-teacher workspaces require an owner-issued pilot activation code.
-- Complimentary, active, paused and trial workspace states are represented without deleting school data.
-- Existing V6.1 single-role accounts convert safely to V6.2 permission maps.
-- Class migration is browser-based, deterministic and resumable.
-- Existing pupils reconnect to the destination workspace automatically with the same account and learner ID.
-- Classes, results, feedback, reflections and interventions retain migration-origin metadata so histories are not duplicated in exports.
-
-## Existing learning workflow
-
-The app also includes:
-
-- school → department → subject → class structure;
-- reusable pupil class codes and scoped staff codes;
-- multiple teachers per class;
-- pupil-created feedback and assessment records;
-- autosaved drafts and live teacher monitoring;
-- rich-text strengths and next steps;
-- detailed grade and target tracking;
-- pupil reflection and closed feedback loops;
-- class, pupil and department dashboards;
-- at-risk indicators and interventions;
-- portable learner IDs, email-change approval and school transfer requests;
-- CSV, JSON and printable pupil exports;
-- Firebase Authentication, Firestore and security rules;
-- a V6.2 multi-role demo.
+- School and independent-teacher workspaces are invitation-only.
+- Existing V6.1 roles convert safely without changing class, pupil, result or feedback IDs.
+- Class migration is deterministic and resumable, with automatic pupil reconnection.
 
 ## Preview
 
@@ -44,30 +36,33 @@ python -m http.server 8000
 
 Then open `http://localhost:8000`.
 
-When Firebase is configured, the site connects to the project in `js/firebase-config.js`. Set `appSettings.forceDemoMode` to `true` temporarily to preview the fictional demo against a configured project.
+When Firebase is configured, the site connects to the project in `js/firebase-config.js`. Set `appSettings.forceDemoMode` to `true` temporarily to preview fictional V6.3 data.
 
-## Upgrade from V6.1
+## Upgrade
 
-Read `UPDATE-GUIDE-V6.2.md` before replacing files or publishing rules. The supplied `scripts/backfill-v62-roles.mjs` has a dry-run mode and does not alter class IDs, pupils, results or feedback history.
+- From an already working V6.2 installation, follow `UPDATE-GUIDE-V6.3.md`.
+- From V6.1, complete `UPDATE-GUIDE-V6.2.md` first, including the role backfill, and then apply V6.3.
+- V6.3 itself requires **no Admin SDK script or Firestore data backfill**.
 
 ## Main files
 
 - `index.html` — app entry point.
-- `styles.css` — responsive interface.
-- `js/app.js` — dashboards, role-area switching and interactions.
-- `js/firebase-service.js` — authentication, permissions, Firestore access and migration.
-- `js/demo-data.js` — fictional V6.2 data.
-- `js/firebase-config.js` — the existing Firebase web configuration.
-- `firestore.rules` — V6.2 access rules.
-- `firestore.indexes.json` — index configuration.
-- `SETUP-GUIDE.md` — owner setup instructions.
-- `UPDATE-GUIDE-V6.2.md` — exact V6.1 upgrade sequence.
-- `MULTI-ROLE-AND-MIGRATION-DESIGN-V6.2.md` — technical design.
-- `scripts` — owner-only Admin SDK tools for activation codes and backfill.
+- `styles.css` — responsive interface and V6.3 session, bank and risk styling.
+- `js/app.js` — dashboards, rich editor, live sessions, improvement bank and professional risk reviews.
+- `js/firebase-service.js` — authentication, permissions, Firestore access, portfolios and migration.
+- `js/export.js` — CSV, JSON and formatted print-to-PDF learning records.
+- `js/demo-data.js` — fictional V6.3 data.
+- `js/firebase-config.js` — existing Firebase web configuration; do not replace with a template.
+- `firestore.rules` — V6.3 access rules.
+- `firestore.indexes.json` — unchanged index configuration.
+- `UPDATE-GUIDE-V6.3.md` — exact V6.2 to V6.3 update sequence.
+- `FEEDBACK-TO-ACTION-DESIGN-V6.3.md` — V6.3 functional and data design.
+- `MULTI-ROLE-AND-MIGRATION-DESIGN-V6.2.md` — retained V6.2 foundation design.
+- `scripts` — owner-only V6.2 Admin SDK tools; not required for the V6.3 update.
 
 ## Pilot boundary
 
-Continue to use fictional accounts until the V6.2 rules have been compiled and tested in a separate Firebase project or Firestore emulator. Before unrestricted production use, move staff-role mutation, licence enforcement and larger migrations to trusted Cloud Functions.
+Continue to use fictional accounts until the V6.3 rules and every role path have been tested in a separate Firebase project or Firestore emulator. Before unrestricted production use, move sensitive cross-school administration, licence enforcement and larger migrations to trusted Cloud Functions.
 
 ## Licence
 

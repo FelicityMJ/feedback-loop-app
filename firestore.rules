@@ -727,6 +727,37 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      match /feedbackSessions/{sessionId} {
+        allow read: if isStaff(schoolId)
+          || (
+            signedIn()
+            && resource.data.pupilIds is list
+            && resource.data.pupilIds.hasAny([request.auth.uid])
+          );
+        allow create: if workspaceWritable(schoolId)
+          && isStaff(schoolId)
+          && request.resource.data.pupilIds is list;
+        allow update: if workspaceWritable(schoolId)
+          && isStaff(schoolId)
+          && request.resource.data.pupilIds is list;
+        allow delete: if false;
+      }
+
+      match /improvementBank/{itemId} {
+        allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
+        allow create: if workspaceWritable(schoolId)
+          && (isStaff(schoolId) || ownsPupilRecord(request.resource.data));
+        allow update: if workspaceWritable(schoolId)
+          && (isStaff(schoolId) || (ownsPupilRecord(resource.data) && request.resource.data.pupilId == resource.data.pupilId));
+        allow delete: if false;
+      }
+
+      match /riskOverrides/{overrideId} {
+        allow read: if isStaff(schoolId);
+        allow create, update: if workspaceWritable(schoolId) && isStaff(schoolId);
+        allow delete: if false;
+      }
+
       match /invites/{inviteCode} {
         allow get: if true;
         allow list: if isSchoolAdmin(schoolId)

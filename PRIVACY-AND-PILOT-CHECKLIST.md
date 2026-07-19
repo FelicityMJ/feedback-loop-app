@@ -78,3 +78,14 @@ The supplied Firestore rules enforce school and role boundaries, but a productio
 - Verify that automatic pupil reconnection links only pupils from the approved source class and keeps the same Firebase UID and learner ID.
 - Compile and emulator-test the V6.2 Firestore rules before live use.
 - Before wider rollout, move staff-role mutation, paid licence enforcement and large migrations to trusted Cloud Functions.
+
+
+## V6.3 feedback-to-action checks
+
+- Confirm a pupil can read only feedback sessions whose `pupilIds` roster contains their own Firebase UID.
+- Confirm confidential teacher-only notes are excluded from every PDF report mode.
+- Treat risk scores as support prompts, never automated decisions. Require a reason and review date for every professional override.
+- Confirm the calculated score and contribution list remain visible after an override.
+- Review audit records for support-indicator decisions.
+- Agree whether improvement-bank evidence may contain uploaded or linked material before adding attachments in a future release.
+- Test PDF output for accidental inclusion of data belonging to another pupil or school.

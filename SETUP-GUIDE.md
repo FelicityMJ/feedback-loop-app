@@ -1,4 +1,4 @@
-# FeedbackLoop V6.2 — setup guide
+# FeedbackLoop V6.3 — setup guide
 
 This app uses static files on GitHub Pages and Firebase Authentication/Firestore. Complete the sections in order and use fictional accounts until every permission path has been tested.
 
@@ -29,13 +29,13 @@ Add the GitHub Pages or custom domain under **Authentication → Settings → Au
 Use the existing V6.1 Firestore database. Before updating:
 
 1. take a backup/export;
-2. copy the complete V6.2 `firestore.rules` into **Firestore Database → Rules**;
+2. copy the complete V6.3 `firestore.rules` into **Firestore Database → Rules**;
 3. publish the rules;
 4. retain the supplied `firestore.indexes.json`.
 
 Do not manually delete or recreate existing `users`, `schools`, classes or pupil records.
 
-## 4. Upgrade existing V6.1 accounts
+## 4. Upgrade existing V6.1 accounts to the V6.2 role foundation
 
 V6.2 can interpret old roles immediately, but the owner backfill upgrades the full pilot consistently.
 
@@ -186,3 +186,18 @@ Use fictional accounts to verify:
 - audit entries are visible only to school administrators.
 
 Compile the rules in a test Firebase project or Firestore emulator before using real pupil data. The browser build sandbox used to assemble this package did not permit a live local-page smoke test or Firebase CLI download.
+
+
+## 16. V6.3 feedback-to-action checks
+
+V6.3 needs no additional Admin SDK backfill. Publish the V6.3 rules and test with fictional data:
+
+- start, close, reopen and archive a live feedback session;
+- confirm only pupils included in the session roster can load it;
+- test bold, four highlights, bullet lists and numbered lists;
+- update and pin an improvement-bank item;
+- save each pupil PDF report type and inspect formatting;
+- record a professional support-indicator review and confirm the calculated reasons remain visible;
+- confirm the review creates an audit record.
+
+See `UPDATE-GUIDE-V6.3.md` for the exact replacement-file list.

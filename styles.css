@@ -512,3 +512,54 @@ tbody tr:hover { background: #fafbff; }
 @media (max-width: 520px) {
   .auth-tabs-four { grid-template-columns: 1fr; }
 }
+
+/* V6.3 — Feedback to Action */
+.list-format{min-width:64px;font-size:.78rem}
+.rich-output ul,.rich-output ol,.table-rich ul,.table-rich ol{margin:.45rem 0;padding-left:1.45rem}
+.rich-output li,.table-rich li{margin:.2rem 0}
+.session-grid{display:grid;gap:12px}
+.session-card,.teacher-session-card{display:flex;gap:18px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:14px;padding:16px;background:var(--surface)}
+.session-card h4,.teacher-session-card h4{margin:5px 0}
+.session-card p,.teacher-session-card p{margin:3px 0;color:var(--muted)}
+.teacher-session-list{display:grid;gap:14px}
+.teacher-session-card{align-items:stretch}
+.session-main{flex:1;min-width:220px}
+.session-stat-grid{display:grid;grid-template-columns:repeat(5,minmax(72px,1fr));gap:8px;align-self:center}
+.session-stat-grid div{background:var(--surface-soft);border-radius:10px;padding:9px;text-align:center}
+.session-stat-grid strong{display:block;font-size:1.15rem}
+.session-stat-grid span{display:block;font-size:.72rem;color:var(--muted);margin-top:2px}
+.session-actions{display:flex;flex-wrap:wrap;gap:7px;align-content:center;justify-content:flex-end;max-width:250px}
+.improvement-filters .filter-row{display:flex;gap:14px;align-items:end;flex-wrap:wrap}
+.improvement-filters .field{margin:0;min-width:180px}
+.improvement-filters .field.grow{flex:1;min-width:260px}
+.improvement-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.improvement-card{padding:18px;position:relative}
+.improvement-card.pinned{box-shadow:0 0 0 2px rgba(240,177,0,.35);background:linear-gradient(180deg,#fffdf5 0%,var(--surface) 35%)}
+.pin-button{border:1px solid var(--line);background:var(--surface);width:36px;height:36px;border-radius:50%;font-size:1.1rem;color:#9aa2b6;cursor:pointer}
+.pin-button.active{color:#e0a800;background:#fff8d8;border-color:#e8cb62}
+.compact-improvement-list{display:grid;gap:10px}
+.compact-improvement-list>div{border:1px solid var(--line);border-radius:10px;padding:10px}
+.compact-improvement-list span{float:right}
+.compact-improvement-list p{margin:5px 0 0;color:var(--muted)}
+.risk-explanation{margin-top:6px}
+.risk-score-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px}
+.risk-explanation ul{list-style:none;padding:0;margin:0;display:grid;gap:6px}
+.risk-explanation li{display:flex;justify-content:space-between;gap:12px;padding:7px 9px;background:rgba(255,255,255,.55);border-radius:8px}
+.risk-explanation li span{display:flex;flex-direction:column}
+.risk-explanation li small{font-weight:normal;color:var(--muted);margin-top:2px}
+.risk-override-note{margin-top:10px;padding:9px 11px;border-left:4px solid var(--primary);background:var(--surface-soft);border-radius:6px}
+.risk-override-note p{margin:4px 0}
+.risk-reason-list{margin:0;padding-left:18px;display:grid;gap:3px}
+.table-actions{display:flex;flex-wrap:wrap;gap:6px}
+
+@media (max-width:1000px){
+  .teacher-session-card{flex-direction:column}
+  .session-stat-grid{width:100%}
+  .session-actions{max-width:none;justify-content:flex-start}
+}
+@media (max-width:760px){
+  .session-card{align-items:flex-start;flex-direction:column}
+  .session-stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .improvement-grid{grid-template-columns:1fr}
+  .improvement-filters .field,.improvement-filters .field.grow{min-width:100%;width:100%}
+}

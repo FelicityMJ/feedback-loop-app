@@ -733,9 +733,20 @@ function feedbackTimelineItem(f) {
   return `<div class="timeline-item"><div class="timeline-dot"></div><div class="timeline-content"><div class="timeline-meta">${badge(f.feedbackType || "Feedback")} ${badge(f.trafficLight)} ${badge(f.status)} ${result}</div><h4>${e(f.assessmentName || f.skill)}</h4><div class="feedback-section"><strong>What went well</strong><div class="rich-output">${richText(f.strengthHtml, f.strength)}</div></div><div class="feedback-section"><strong>Next step</strong><div class="rich-output">${richText(f.nextStepHtml, f.nextStep)}</div></div>${action ? `<p><strong>Your action:</strong> ${e(action.actionTaken)}</p>` : ""}<div class="small muted">${dateFmt(f.date)} · ${e(f.skill)}</div></div></div>`;
 }
 
+function activePupilIdsForClass(classId) {
+  return unique((state.data?.memberships || [])
+    .filter((membership) => membership.classId === classId && membership.active !== false)
+    .map((membership) => membership.userId)
+    .filter(Boolean));
+}
+
 function feedbackSessionsForPupil(pupilId = state.profile?.id) {
-  const classIds = new Set((state.data?.memberships || []).filter((membership) => membership.userId === pupilId && membership.active !== false).map((membership) => membership.classId));
-  return sortByDateDesc((state.data?.feedbackSessions || []).filter((session) => classIds.has(session.classId) && session.status === "open"), "createdAt");
+  // Pupil session documents are already securely queried by pupilIds. Do not
+  // hide them again because a separately loaded membership record is stale.
+  return sortByDateDesc((state.data?.feedbackSessions || []).filter((session) =>
+    session.status === "open"
+    && (!Array.isArray(session.pupilIds) || session.pupilIds.includes(pupilId))
+  ), "createdAt");
 }
 
 function feedbackSessionsVisibleToTeacher() {
@@ -941,7 +952,7 @@ function renderTeacherFeedback() {
   const openSessions = sessions.filter((session) => session.status === "open");
   return `<div class="page-head"><div><h1>Live feedback sessions</h1><p>Prepare one class activity, watch drafts autosave and see exactly who has submitted, who is still writing and who has not started.</p></div><div class="page-actions"><span class="live-indicator"><span></span>Listening live</span><button class="btn btn-primary" data-action="start-feedback-session">Start feedback session</button></div></div>
     <div class="grid grid-4">${kpi("◉", "Open sessions", openSessions.length, "Teacher-led class activities")}${kpi("✎", "Submitted records", submitted.length)}${kpi("▤", "Results entered", results.length)}${kpi("✓", "Closed loops", submitted.filter((f) => f.status === "closed").length)}</div>
-    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Class feedback sessions</h3><p>Close a session to stop new pupils starting it. Existing autosaved drafts remain available.</p></div></div><div class="card-body teacher-session-list">${sessions.length ? sessions.map((session) => { const stats = feedbackSessionStats(session); return `<article class="teacher-session-card"><div class="session-main"><div class="timeline-meta">${badge(session.status)} ${badge(session.feedbackType || "Feedback")}</div><h4>${e(session.title)}</h4><p>${e(getClassName(session.classId))} · ${e(session.skill)}</p>${session.instructions ? `<small>${e(session.instructions)}</small>` : ""}</div><div class="session-stat-grid"><div><strong>${stats.submitted.length}</strong><span>Submitted</span></div><div><strong>${stats.activeNow.length}</strong><span>Active now</span></div><div><strong>${stats.drafts.length}</strong><span>Drafts</span></div><div><strong>${stats.notStarted.length}</strong><span>Not started</span></div><div><strong>${stats.red.length}</strong><span>Red</span></div></div><div class="session-actions"><button class="btn btn-ghost btn-sm" data-action="view-feedback-session" data-id="${e(session.id)}">Open session</button>${session.status === "open" ? `<button class="btn btn-secondary btn-sm" data-action="close-feedback-session" data-id="${e(session.id)}">Close session</button>` : `<button class="btn btn-secondary btn-sm" data-action="reopen-feedback-session" data-id="${e(session.id)}">Reopen</button>`}<button class="btn btn-ghost btn-sm" data-action="copy-incomplete-session" data-id="${e(session.id)}">Copy incomplete list</button><button class="btn btn-ghost btn-sm" data-action="archive-feedback-session" data-id="${e(session.id)}">Archive</button></div></article>`; }).join("") : `<div class="empty">No feedback sessions yet. Start one before returning marked work to a class.</div>`}</div></section>
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Class feedback sessions</h3><p>Close a session to stop new pupils starting it. Existing autosaved drafts remain available.</p></div></div><div class="card-body teacher-session-list">${sessions.length ? sessions.map((session) => { const stats = feedbackSessionStats(session); return `<article class="teacher-session-card"><div class="session-main"><div class="timeline-meta">${badge(session.status)} ${badge(session.feedbackType || "Feedback")}</div><h4>${e(session.title)}</h4><p>${e(getClassName(session.classId))} · ${e(session.skill)}</p>${session.instructions ? `<small>${e(session.instructions)}</small>` : ""}</div><div class="session-stat-grid"><div><strong>${stats.submitted.length}</strong><span>Submitted</span></div><div><strong>${stats.activeNow.length}</strong><span>Active now</span></div><div><strong>${stats.drafts.length}</strong><span>Drafts</span></div><div><strong>${stats.notStarted.length}</strong><span>Not started</span></div><div><strong>${stats.red.length}</strong><span>Red</span></div></div><div class="session-actions"><button class="btn btn-ghost btn-sm" data-action="view-feedback-session" data-id="${e(session.id)}">Open session</button><button class="btn btn-ghost btn-sm" data-action="refresh-feedback-session-pupils" data-id="${e(session.id)}">Refresh pupils</button>${session.status === "open" ? `<button class="btn btn-secondary btn-sm" data-action="close-feedback-session" data-id="${e(session.id)}">Close session</button>` : `<button class="btn btn-secondary btn-sm" data-action="reopen-feedback-session" data-id="${e(session.id)}">Reopen</button>`}<button class="btn btn-ghost btn-sm" data-action="copy-incomplete-session" data-id="${e(session.id)}">Copy incomplete list</button><button class="btn btn-ghost btn-sm" data-action="archive-feedback-session" data-id="${e(session.id)}">Archive</button></div></article>`; }).join("") : `<div class="empty">No feedback sessions yet. Start one before returning marked work to a class.</div>`}</div></section>
     <section class="card live-monitor" style="margin-top:18px"><div class="card-head"><div><h3>Incoming drafts</h3><p>This section updates automatically while pupils type on another device.</p></div><span class="live-indicator"><span></span>Live</span></div><div class="card-body live-draft-list">${drafts.length ? drafts.map((f) => `<article class="live-draft"><div class="live-draft-main"><div class="timeline-meta">${badge(f.feedbackType || "Draft")} ${f.sessionId ? badge("Session") : ""} ${f.grade ? badge(f.grade) : ""}</div><h4>${e(getUserName(f.pupilId))} — ${e(f.assessmentName || "Untitled feedback")}</h4><p>${e(getClassName(f.classId))} · ${e(f.skill || "Topic not entered yet")}</p>${f.percentage !== null && f.percentage !== undefined ? `<strong>${e(f.score)} / ${e(f.maxScore)} · ${formatPercent(f.percentage)}</strong>` : ""}</div><div class="live-draft-side"><small>Saved ${dateFmt(f.autosavedAt || f.updatedAt, { hour: "2-digit", minute: "2-digit" })}</small><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View draft</button></div></article>`).join("") : `<div class="empty">No pupil is currently working on a draft.</div>`}</div></section>
     <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Completed feedback records</h3><p>Marks, grades and pupil-written next steps are shown together.</p></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Pupil</th><th>Type</th><th>Activity</th><th>Result</th><th>Next step</th><th></th></tr></thead><tbody>${submitted.map((f) => `<tr><td>${dateFmt(f.date)}</td><td><button class="table-link" data-action="open-pupil" data-id="${f.pupilId}">${e(getUserName(f.pupilId))}</button><div class="small muted">${e(getClassName(f.classId))}</div></td><td>${badge(f.feedbackType || "Feedback")}${f.sessionId ? `<div>${badge("Session")}</div>` : ""}</td><td><strong>${e(f.assessmentName || f.skill)}</strong>${f.needsTeacherReview ? `<div>${badge("Pupil edit to review")}</div>` : ""}<div class="small muted">${e(f.skill)}</div></td><td>${f.percentage !== null && f.percentage !== undefined ? `${badge(f.grade)} ${formatPercent(f.percentage)}` : "No mark"}</td><td><div class="table-rich">${richText(f.nextStepHtml, f.nextStep)}</div></td><td><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">No completed feedback records yet.</td></tr>`}</tbody></table></div></section>`;
 }
@@ -1928,9 +1939,26 @@ app.addEventListener("click", async (event) => {
   if (action === "start-feedback-session") return modalStartFeedbackSession();
   if (action === "open-feedback-session") return modalPupilAddFeedback(null, id);
   if (action === "view-feedback-session") return modalViewFeedbackSession(id);
+  if (action === "refresh-feedback-session-pupils") {
+    const session = byId(state.data.feedbackSessions, id);
+    if (!session) return toast("Feedback session not found.", "error");
+    const pupilIds = activePupilIdsForClass(session.classId);
+    await withBusy(actionEl, async()=>{
+      await updateSchoolEntity(state.profile.schoolId, "feedbackSessions", id, { pupilIds, rosterRefreshedAt: new Date().toISOString(), rosterRefreshedBy: state.profile.id });
+      await refresh();
+      toast(`Session refreshed for ${pupilIds.length} pupil${pupilIds.length === 1 ? "" : "s"}.`);
+    });
+    return;
+  }
   if (["close-feedback-session", "reopen-feedback-session", "archive-feedback-session"].includes(action)) {
     const status = action === "close-feedback-session" ? "closed" : action === "reopen-feedback-session" ? "open" : "archived";
-    await withBusy(actionEl, async()=>{await updateSchoolEntity(state.profile.schoolId, "feedbackSessions", id, { status, statusChangedAt: new Date().toISOString(), statusChangedBy: state.profile.id });closeModal();await refresh();toast(status === "open" ? "Feedback session reopened." : status === "closed" ? "Feedback session closed to new starters." : "Feedback session archived.");}); return;
+    await withBusy(actionEl, async()=>{
+      const session = byId(state.data.feedbackSessions, id);
+      const changes = { status, statusChangedAt: new Date().toISOString(), statusChangedBy: state.profile.id };
+      if (status === "open" && session) changes.pupilIds = activePupilIdsForClass(session.classId);
+      await updateSchoolEntity(state.profile.schoolId, "feedbackSessions", id, changes);
+      closeModal();await refresh();toast(status === "open" ? "Feedback session reopened and the current class list was refreshed." : status === "closed" ? "Feedback session closed to new starters." : "Feedback session archived.");
+    }); return;
   }
   if (action === "copy-incomplete-session") {
     const session = byId(state.data.feedbackSessions, id);
@@ -2166,7 +2194,7 @@ app.addEventListener("submit", async (event) => {
       case "start-feedback-session": {
         const cls = byId(classesVisibleToProfile(), data.classId);
         if (!cls) throw new Error("Choose one of your classes.");
-        await createSchoolEntity(state.profile.schoolId, "feedbackSessions", { classId: cls.id, subjectId: cls.subjectId, pupilIds: pupilsForClass(cls.id).map((pupil) => pupil.id), title: data.title.trim(), skill: data.skill.trim(), feedbackType: data.feedbackType, assessmentComponent: data.assessmentComponent?.trim() || "", instructions: data.instructions?.trim() || "", date: data.date || todayInput(), status: "open", createdBy: state.profile.id, createdByName: state.profile.displayName });
+        await createSchoolEntity(state.profile.schoolId, "feedbackSessions", { classId: cls.id, subjectId: cls.subjectId, pupilIds: activePupilIdsForClass(cls.id), title: data.title.trim(), skill: data.skill.trim(), feedbackType: data.feedbackType, assessmentComponent: data.assessmentComponent?.trim() || "", instructions: data.instructions?.trim() || "", date: data.date || todayInput(), status: "open", createdBy: state.profile.id, createdByName: state.profile.displayName });
         closeModal(); await refresh(); toast("Live feedback session started."); break;
       }
       case "manage-improvement": {

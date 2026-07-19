@@ -56,7 +56,7 @@ const normaliseValue = (value) => {
   }
   return value;
 };
-const normaliseDoc = (snap) => normaliseValue({ id: snap.id, ...snap.data() });
+const normaliseDoc = (snap) => normaliseValue({ ...snap.data(), id: snap.id });
 
 const emptyRoles = () => ({ schoolAdmin: false, departmentHead: false, teacher: false, pupil: false });
 
@@ -1104,8 +1104,12 @@ export async function loadAppData(profile) {
     safeFetch(["schools", schoolId, "classes"])
   ]);
 
-  const pupilConstraint = where("pupilId", "==", profile.id);
-  const memberConstraint = where("userId", "==", profile.id);
+  // Always use the authenticated Firebase UID for pupil-owned queries.
+  // The Firestore document ID is also normalised to this UID, but keeping the
+  // query tied to auth avoids old profile fields hiding an assigned session.
+  const pupilUid = auth?.currentUser?.uid || profile.id;
+  const pupilConstraint = where("pupilId", "==", pupilUid);
+  const memberConstraint = where("userId", "==", pupilUid);
   const usersPromise = staff
     ? Promise.all([
         safeFetch(["users"], [where("schoolId", "==", schoolId)]),
@@ -1123,7 +1127,7 @@ export async function loadAppData(profile) {
     isPupil ? safeFetch(["schools", schoolId, "feedbackRecords"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackRecords"]),
     isPupil ? safeFetch(["schools", schoolId, "feedbackActions"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackActions"]),
     isPupil ? Promise.resolve([]) : safeFetch(["schools", schoolId, "interventions"]),
-    isPupil ? safeFetch(["schools", schoolId, "feedbackSessions"], [where("pupilIds", "array-contains", profile.id)]) : safeFetch(["schools", schoolId, "feedbackSessions"]),
+    isPupil ? safeFetch(["schools", schoolId, "feedbackSessions"], [where("pupilIds", "array-contains", pupilUid)]) : safeFetch(["schools", schoolId, "feedbackSessions"]),
     isPupil ? safeFetch(["schools", schoolId, "improvementBank"], [pupilConstraint]) : safeFetch(["schools", schoolId, "improvementBank"]),
     isPupil ? Promise.resolve([]) : safeFetch(["schools", schoolId, "riskOverrides"]),
     profileAccess.roles.schoolAdmin

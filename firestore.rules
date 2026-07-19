@@ -216,6 +216,12 @@ service cloud.firestore {
       return signedIn() && data.pupilId == request.auth.uid;
     }
 
+    // Class membership documents use userId rather than pupilId. Keeping this
+    // separate prevents pupil data queries from silently returning no classes.
+    function ownsPupilMembership(data) {
+      return signedIn() && data.userId == request.auth.uid;
+    }
+
     function validInvite(schoolId, inviteCode) {
       return inviteCode is string
         && exists(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode))
@@ -613,7 +619,7 @@ service cloud.firestore {
       }
 
       match /memberships/{membershipId} {
-        allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
+        allow read: if isStaff(schoolId) || ownsPupilMembership(resource.data);
         allow create: if workspaceWritable(schoolId)
           && (
             isStaff(schoolId)

@@ -12,10 +12,13 @@ export const demoData = {
     name: "Northbridge Academy",
     shortName: "Northbridge",
     transferCode: "northbridge-academy~NB42Q7",
-    active: true
+    active: true,
+    workspaceStatus: "active",
+    emergencyManagementAccess: true,
+    licence: { type: "complimentaryPilot", status: "active", complimentary: true, trialEndsAt: null, sponsorName: "", activationLabel: "V6.2 pilot" }
   },
   departments: [
-    { id: "computing-business", name: "Computing & Business", headIds: ["demo-head"] },
+    { id: "computing-business", name: "Computing & Business", headIds: ["demo-head", "demo-admin"] },
     { id: "mathematics", name: "Mathematics", headIds: [] },
     { id: "english", name: "English", headIds: [] }
   ],
@@ -26,18 +29,18 @@ export const demoData = {
     { id: "english", name: "English", departmentId: "english", gradeScale: "A1-D8" }
   ],
   users: [
-    { id: "demo-admin", learnerId: null, displayName: "Mrs Campbell", email: "admin@northbridge.demo", role: "schoolAdmin", schoolId: DEMO_SCHOOL_ID, departmentIds: [], active: true },
-    { id: "demo-head", learnerId: null, displayName: "Mr Fraser", email: "head@northbridge.demo", role: "departmentHead", schoolId: DEMO_SCHOOL_ID, departmentIds: ["computing-business"], active: true },
-    { id: "demo-teacher", learnerId: null, displayName: "Mrs Miller", email: "teacher@northbridge.demo", role: "teacher", schoolId: DEMO_SCHOOL_ID, departmentIds: ["computing-business"], active: true },
-    { id: "demo-pupil", learnerId: "L-2F4A9D7C", displayName: "Ava Morrison", email: "ava.morrison@northbridge.demo", role: "pupil", schoolId: DEMO_SCHOOL_ID, departmentIds: [], active: true, schoolHistoryIds: [DEMO_SCHOOL_ID] },
-    { id: "pupil-2", learnerId: "L-5A2B91E4", displayName: "Jamie Reid", email: "jamie.reid@northbridge.demo", role: "pupil", schoolId: DEMO_SCHOOL_ID, departmentIds: [], active: true, schoolHistoryIds: [DEMO_SCHOOL_ID] },
-    { id: "pupil-3", learnerId: "L-8E77C22A", displayName: "Sophie Khan", email: "sophie.khan@northbridge.demo", role: "pupil", schoolId: DEMO_SCHOOL_ID, departmentIds: [], active: true, schoolHistoryIds: [DEMO_SCHOOL_ID] },
-    { id: "pupil-4", learnerId: "L-118DB7F0", displayName: "Lewis Grant", email: "lewis.grant@northbridge.demo", role: "pupil", schoolId: DEMO_SCHOOL_ID, departmentIds: [], active: true, schoolHistoryIds: [DEMO_SCHOOL_ID] }
+    { id: "demo-admin", learnerId: null, displayName: "Mrs Campbell", email: "admin@northbridge.demo", role: "schoolAdmin", roles: { schoolAdmin: true, departmentHead: true, teacher: true, pupil: false }, roleSchemaVersion: 2, schoolId: DEMO_SCHOOL_ID, departmentIds: ["computing-business"], departmentHeadDepartmentIds: ["computing-business"], workspaceIds: [DEMO_SCHOOL_ID], active: true },
+    { id: "demo-head", learnerId: null, displayName: "Mr Fraser", email: "head@northbridge.demo", role: "departmentHead", roles: { schoolAdmin: false, departmentHead: true, teacher: true, pupil: false }, roleSchemaVersion: 2, schoolId: DEMO_SCHOOL_ID, departmentIds: ["computing-business"], departmentHeadDepartmentIds: ["computing-business"], workspaceIds: [DEMO_SCHOOL_ID], active: true },
+    { id: "demo-teacher", learnerId: null, displayName: "Mrs Miller", email: "teacher@northbridge.demo", role: "teacher", roles: { schoolAdmin: false, departmentHead: false, teacher: true, pupil: false }, roleSchemaVersion: 2, schoolId: DEMO_SCHOOL_ID, departmentIds: ["computing-business"], departmentHeadDepartmentIds: [], workspaceIds: [DEMO_SCHOOL_ID], active: true },
+    { id: "demo-pupil", learnerId: "L-2F4A9D7C", displayName: "Ava Morrison", email: "ava.morrison@northbridge.demo", role: "pupil", roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true }, roleSchemaVersion: 2, schoolId: DEMO_SCHOOL_ID, departmentIds: [], departmentHeadDepartmentIds: [], workspaceIds: [DEMO_SCHOOL_ID], active: true, schoolHistoryIds: [DEMO_SCHOOL_ID] },
+    { id: "pupil-2", learnerId: "L-5A2B91E4", displayName: "Jamie Reid", email: "jamie.reid@northbridge.demo", role: "pupil", roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true }, roleSchemaVersion: 2, schoolId: DEMO_SCHOOL_ID, departmentIds: [], departmentHeadDepartmentIds: [], workspaceIds: [DEMO_SCHOOL_ID], active: true, schoolHistoryIds: [DEMO_SCHOOL_ID] },
+    { id: "pupil-3", learnerId: "L-8E77C22A", displayName: "Sophie Khan", email: "sophie.khan@northbridge.demo", role: "pupil", roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true }, roleSchemaVersion: 2, schoolId: DEMO_SCHOOL_ID, departmentIds: [], departmentHeadDepartmentIds: [], workspaceIds: [DEMO_SCHOOL_ID], active: true, schoolHistoryIds: [DEMO_SCHOOL_ID] },
+    { id: "pupil-4", learnerId: "L-118DB7F0", displayName: "Lewis Grant", email: "lewis.grant@northbridge.demo", role: "pupil", roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true }, roleSchemaVersion: 2, schoolId: DEMO_SCHOOL_ID, departmentIds: [], departmentHeadDepartmentIds: [], workspaceIds: [DEMO_SCHOOL_ID], active: true, schoolHistoryIds: [DEMO_SCHOOL_ID] }
   ],
   classes: [
     { id: "n5-computing-a", name: "4A Computing", subjectId: "computing", departmentId: "computing-business", teacherIds: ["demo-teacher", "demo-head"], academicYear: "2026/27", targetQualification: "National 5", active: true },
     { id: "higher-computing", name: "Higher Computing", subjectId: "computing", departmentId: "computing-business", teacherIds: ["demo-head"], academicYear: "2026/27", targetQualification: "Higher", active: true },
-    { id: "n5-business-a", name: "4A Business", subjectId: "business", departmentId: "computing-business", teacherIds: ["demo-teacher"], academicYear: "2026/27", targetQualification: "National 5", active: true }
+    { id: "n5-business-a", name: "4A Business", subjectId: "business", departmentId: "computing-business", teacherIds: ["demo-teacher", "demo-admin"], academicYear: "2026/27", targetQualification: "National 5", active: true }
   ],
   memberships: [
     { id: "m1", userId: "demo-pupil", classId: "n5-computing-a", subjectId: "computing", targetGrade: "A2", currentGrade: "A2", active: true },
@@ -85,9 +88,13 @@ export const demoData = {
     { id: "i2", pupilId: "pupil-2", classId: "n5-computing-a", concernArea: "Extended explanations", concernLevel: "Medium", action: "Use model-answer structure for explain/justify questions.", ownerId: "demo-teacher", openedAt: daysAgo(20), reviewDate: daysAgo(-2), impact: "More precise answers in recent classwork.", status: "In progress" }
   ],
   invites: [
-    { id: "northbridge-academy~HEAD-4K7Q", schoolId: DEMO_SCHOOL_ID, role: "departmentHead", departmentIds: ["computing-business"], classIds: [], active: true, label: "Computing and Business department-head code", scopeType: "department", scopeLabel: "Computing and Business", createdBy: "demo-admin" },
-    { id: "northbridge-academy~TEACH-9K4M", schoolId: DEMO_SCHOOL_ID, role: "teacher", departmentIds: ["computing-business"], classIds: [], active: true, label: "Computing and Business teacher department code", scopeType: "department", scopeLabel: "Computing and Business", createdBy: "demo-head" },
+    { id: "northbridge-academy~STAFF-4K7Q", schoolId: DEMO_SCHOOL_ID, role: "staff", roles: { schoolAdmin: false, departmentHead: true, teacher: true, pupil: false }, roleSchemaVersion: 2, departmentIds: ["computing-business"], departmentHeadDepartmentIds: ["computing-business"], classIds: [], active: true, label: "Computing and Business leadership code", scopeType: "internalStaff", scopeLabel: "Computing and Business", createdBy: "demo-admin" },
+    { id: "northbridge-academy~TEACH-9K4M", schoolId: DEMO_SCHOOL_ID, role: "teacher", roles: { schoolAdmin: false, departmentHead: false, teacher: true, pupil: false }, roleSchemaVersion: 2, departmentIds: ["computing-business"], departmentHeadDepartmentIds: [], classIds: [], active: true, label: "Computing and Business teacher department code", scopeType: "department", scopeLabel: "Computing and Business", createdBy: "demo-head" },
     { id: "northbridge-academy~4ACOMP-26", schoolId: DEMO_SCHOOL_ID, role: "pupil", departmentIds: ["computing-business"], classIds: ["n5-computing-a"], subjectId: "computing-science", active: true, label: "4A Computing pupil class code", scopeType: "class", scopeLabel: "4A Computing", createdBy: "demo-teacher" }
+  ],
+  auditLogs: [
+    { id: "audit-demo-1", action: "schoolActivated", userId: "demo-admin", userName: "Mrs Campbell", createdAt: daysAgo(5) },
+    { id: "audit-demo-2", action: "staffRolesChanged", userId: "demo-admin", userName: "Mrs Campbell", targetUserId: "demo-head", targetUserName: "Mr Fraser", createdAt: daysAgo(2) }
   ],
   transferRequests: [],
   emailChangeRequests: [],

@@ -11,7 +11,7 @@ let createUserWithEmailAndPassword, firebaseSignOut, sendPasswordResetEmail;
 let sendEmailVerification, GoogleAuthProvider, signInWithPopup, updateProfile, deleteUser;
 let verifyBeforeUpdateEmail, getFirestore, doc, getDoc, getDocs, setDoc;
 let addDoc, updateDoc, deleteDoc, collection, query, where, limit, onSnapshot;
-let serverTimestamp, writeBatch, arrayUnion;
+let serverTimestamp, writeBatch, arrayUnion, runTransaction;
 
 const firebaseReady = isDemoMode ? Promise.resolve() : Promise.all([
   import("https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js"),
@@ -27,7 +27,7 @@ const firebaseReady = isDemoMode ? Promise.resolve() : Promise.all([
   } = authMod);
   ({
     getFirestore, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
-    collection, query, where, limit, onSnapshot, serverTimestamp, writeBatch, arrayUnion
+    collection, query, where, limit, onSnapshot, serverTimestamp, writeBatch, arrayUnion, runTransaction
   } = firestoreMod);
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
@@ -47,20 +47,86 @@ const makeUuid = () => {
 };
 const randomId = (prefix = "") => `${prefix}${makeUuid().replaceAll("-", "").slice(0, 12)}`;
 const learnerId = () => `L-${makeUuid().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
-const asDateValue = (value) => {
+const normaliseValue = (value) => {
   if (!value) return value;
   if (typeof value?.toDate === "function") return value.toDate().toISOString();
+  if (Array.isArray(value)) return value.map(normaliseValue);
+  if (typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normaliseValue(item)]));
+  }
   return value;
 };
-const normaliseDoc = (snap) => {
-  const data = snap.data();
-  return Object.fromEntries(
-    Object.entries({ id: snap.id, ...data }).map(([key, value]) => [key, asDateValue(value)])
-  );
-};
+const normaliseDoc = (snap) => normaliseValue({ id: snap.id, ...snap.data() });
 
-const demoStorageKey = "feedbackLoopDemoStateV2";
-const demoUserKey = "feedbackLoopDemoUserV2";
+const emptyRoles = () => ({ schoolAdmin: false, departmentHead: false, teacher: false, pupil: false });
+
+export function rolesFromLegacy(role, supplied = null) {
+  const roles = { ...emptyRoles(), ...(supplied || {}) };
+  if (role === "pupil") roles.pupil = true;
+  if (role === "teacher") roles.teacher = true;
+  if (role === "departmentHead") { roles.departmentHead = true; roles.teacher = true; }
+  if (role === "schoolAdmin") roles.schoolAdmin = true;
+  if (roles.departmentHead) roles.teacher = true;
+  if (roles.pupil) return { ...emptyRoles(), pupil: true };
+  return roles;
+}
+
+export function primaryRoleForRoles(roles) {
+  if (roles?.pupil) return "pupil";
+  if (roles?.schoolAdmin) return "schoolAdmin";
+  if (roles?.departmentHead) return "departmentHead";
+  return "teacher";
+}
+
+function normaliseRoleAccess(data = {}) {
+  const roles = rolesFromLegacy(data.role, data.roles);
+  const departmentHeadDepartmentIds = [...new Set(
+    data.departmentHeadDepartmentIds || (roles.departmentHead ? data.departmentIds || [] : [])
+  )];
+  return {
+    roles,
+    role: primaryRoleForRoles(roles),
+    departmentHeadDepartmentIds,
+    departmentIds: [...new Set([...(data.departmentIds || []), ...departmentHeadDepartmentIds])],
+    roleSchemaVersion: 2
+  };
+}
+
+function isPupilProfile(profile) {
+  return rolesFromLegacy(profile?.role, profile?.roles).pupil === true;
+}
+
+function isStaffProfile(profile) {
+  const roles = rolesFromLegacy(profile?.role, profile?.roles);
+  return roles.schoolAdmin || roles.departmentHead || roles.teacher;
+}
+
+function hasWorkspaceRole(data, role) {
+  return rolesFromLegacy(data?.role, data?.roles)[role] === true;
+}
+
+function workspaceLicenceFromActivation(activation = {}) {
+  const licenceType = activation.licenceType || activation.accessType || "complimentaryPilot";
+  const workspaceStatus = activation.workspaceStatus || (licenceType === "trial" ? "trial" : "active");
+  return {
+    workspaceStatus,
+    licence: {
+      type: licenceType,
+      status: workspaceStatus,
+      trialEndsAt: normaliseValue(activation.trialEndsAt) || null,
+      complimentary: licenceType === "complimentaryPilot",
+      sponsorName: activation.sponsorName || "",
+      activationLabel: activation.label || ""
+    }
+  };
+}
+
+function safeWorkspaceSlug(value = "school") {
+  return String(value || "school").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "school";
+}
+
+const demoStorageKey = "feedbackLoopDemoStateV3";
+const demoUserKey = "feedbackLoopDemoUserV3";
 
 function getDemoState() {
   const stored = localStorage.getItem(demoStorageKey);
@@ -130,7 +196,7 @@ export function observeSchoolFeedback(profile, callback, errorCallback = console
   firebaseReady.then(() => {
     if (cancelled) return;
     const base = collection(db, "schools", profile.schoolId, "feedbackRecords");
-    const ref = profile.role === "pupil"
+    const ref = isPupilProfile(profile)
       ? query(base, where("pupilId", "==", profile.id))
       : base;
     unsubscribe = onSnapshot(ref, (snapshot) => {
@@ -244,7 +310,7 @@ export async function previewPupilClassInvite(inviteCode) {
 }
 
 export async function joinPupilClass(profile, inviteCode) {
-  if (!profile || profile.role !== "pupil") throw new Error("Only a pupil account can join a pupil class code.");
+  if (!profile || !isPupilProfile(profile)) throw new Error("Only a pupil account can join a pupil class code.");
   if (isDemoMode) {
     const state = getDemoState();
     const code = String(inviteCode || "").trim();
@@ -273,24 +339,32 @@ export async function joinPupilClass(profile, inviteCode) {
   const workspaceRef = doc(db, "users", profile.id, "workspaces", schoolId);
   const workspaceSnap = await getDoc(workspaceRef);
   const batch = writeBatch(db);
+  const pupilWorkspacePayload = {
+    uid: profile.id,
+    schoolId,
+    role: "pupil",
+    roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true },
+    roleSchemaVersion: 2,
+    departmentIds: invite.departmentIds || [],
+    departmentHeadDepartmentIds: [],
+    workspaceOwner: false,
+    authProvider: profile.authProvider || providerName(auth.currentUser),
+    inviteCode: code,
+    active: true,
+    updatedAt: serverTimestamp()
+  };
   if (!workspaceSnap.exists()) {
-    batch.set(workspaceRef, {
-      uid: profile.id,
-      schoolId,
-      role: "pupil",
-      departmentIds: invite.departmentIds || [],
-      workspaceOwner: false,
-      authProvider: profile.authProvider || providerName(auth.currentUser),
-      inviteCode: code,
-      active: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    });
+    batch.set(workspaceRef, { ...pupilWorkspacePayload, createdAt: serverTimestamp() });
+  } else {
+    batch.set(workspaceRef, pupilWorkspacePayload, { merge: true });
   }
   batch.update(doc(db, "users", profile.id), {
     schoolId,
     role: "pupil",
+    roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true },
+    roleSchemaVersion: 2,
     departmentIds: invite.departmentIds || [],
+    departmentHeadDepartmentIds: [],
     workspaceOwner: false,
     inviteCode: code,
     workspaceIds: arrayUnion(schoolId),
@@ -335,14 +409,23 @@ async function completeInviteProfile(user, { displayName, inviteCode, authProvid
   await updateProfile(user, { displayName: realName });
   const batch = writeBatch(db);
   const departments = invite.departmentIds || [];
+  const inviteAccess = normaliseRoleAccess({
+    role: invite.role === "staff" ? "teacher" : invite.role,
+    roles: invite.roles,
+    departmentIds: departments,
+    departmentHeadDepartmentIds: invite.departmentHeadDepartmentIds || (invite.role === "departmentHead" ? departments : [])
+  });
   const profile = {
     displayName: realName,
     email,
-    role: invite.role,
+    role: inviteAccess.role,
+    roles: inviteAccess.roles,
+    roleSchemaVersion: 2,
     schoolId,
-    departmentIds: departments,
-    learnerId: invite.role === "pupil" ? learnerId() : null,
-    schoolHistoryIds: invite.role === "pupil" ? [schoolId] : [],
+    departmentIds: inviteAccess.departmentIds,
+    departmentHeadDepartmentIds: inviteAccess.departmentHeadDepartmentIds,
+    learnerId: inviteAccess.roles.pupil ? learnerId() : null,
+    schoolHistoryIds: inviteAccess.roles.pupil ? [schoolId] : [],
     workspaceIds: [schoolId],
     workspaceOwner: false,
     authProvider,
@@ -355,8 +438,11 @@ async function completeInviteProfile(user, { displayName, inviteCode, authProvid
   batch.set(doc(db, "users", user.uid, "workspaces", schoolId), {
     uid: user.uid,
     schoolId,
-    role: invite.role,
-    departmentIds: departments,
+    role: inviteAccess.role,
+    roles: inviteAccess.roles,
+    roleSchemaVersion: 2,
+    departmentIds: inviteAccess.departmentIds,
+    departmentHeadDepartmentIds: inviteAccess.departmentHeadDepartmentIds,
     workspaceOwner: false,
     authProvider,
     inviteCode: code,
@@ -364,7 +450,7 @@ async function completeInviteProfile(user, { displayName, inviteCode, authProvid
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp()
   });
-  if (invite.role === "pupil") {
+  if (inviteAccess.roles.pupil) {
     for (const classId of invite.classIds || []) {
       const membershipRef = doc(collection(db, "schools", schoolId, "memberships"));
       batch.set(membershipRef, {
@@ -401,9 +487,12 @@ export async function registerWithInvite({ displayName, email, password, inviteC
       id,
       displayName,
       email,
-      role: invite.role,
+      role: primaryRoleForRoles(rolesFromLegacy(invite.role === "staff" ? "teacher" : invite.role, invite.roles)),
+      roles: rolesFromLegacy(invite.role === "staff" ? "teacher" : invite.role, invite.roles),
+      roleSchemaVersion: 2,
       schoolId: invite.schoolId,
       departmentIds: invite.departmentIds || [],
+      departmentHeadDepartmentIds: invite.departmentHeadDepartmentIds || (invite.role === "departmentHead" ? invite.departmentIds || [] : []),
       learnerId: invite.role === "pupil" ? learnerId() : null,
       schoolHistoryIds: invite.role === "pupil" ? [invite.schoolId] : [],
       workspaceIds: [invite.schoolId],
@@ -450,54 +539,64 @@ export async function registerWithInviteGoogle({ displayName, inviteCode }) {
   return completeInviteProfile(user, { displayName: displayName || user.displayName, inviteCode, authProvider: "google" });
 }
 
-async function createIndependentWorkspaceForUser(user, { displayName, workspaceName, authProvider }) {
+async function loadActivationCode(activationCode, expectedType, email = "") {
+  const code = String(activationCode || "").trim().toUpperCase();
+  if (!code) throw new Error("Enter the activation code supplied for the pilot.");
+  const ref = doc(db, "activationCodes", code);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error("That activation code was not recognised.");
+  const activation = snap.data();
+  if (activation.active !== true) throw new Error("That activation code is not active.");
+  const accountType = activation.accountType || activation.workspaceType;
+  if (accountType !== expectedType) throw new Error(`That code is not for a ${expectedType === "school" ? "school" : "teacher"} workspace.`);
+  if (activation.assignedEmail && String(activation.assignedEmail).toLowerCase() !== String(email || "").toLowerCase()) {
+    throw new Error("That activation code was issued for a different email address.");
+  }
+  if (activation.redeemedBy) throw new Error("That activation code has already been redeemed.");
+  return { code, ref, activation };
+}
+
+async function createIndependentWorkspaceForUser(user, { displayName, workspaceName, authProvider, activationCode }) {
   const realName = String(displayName || user?.displayName || "").trim();
   if (!realName) throw new Error("Enter your real full name.");
   const name = String(workspaceName || "").trim() || `${realName}'s Classes`;
   const existingProfile = await getDoc(doc(db, "users", user.uid));
   if (existingProfile.exists()) throw new Error("This account already has a FeedbackLoop profile. Use Sign in instead.");
+  const activationInfo = await loadActivationCode(activationCode, "independentTeacher", user.email || "");
+  const access = workspaceLicenceFromActivation(activationInfo.activation);
   const workspaceId = `personal-${user.uid}`;
   const departmentId = "personal-department";
   const subjectId = "personal-subject";
   await updateProfile(user, { displayName: realName });
-  const batch = writeBatch(db);
-  batch.set(doc(db, "schools", workspaceId), {
-    name,
-    shortName: name,
-    active: true,
-    workspaceType: "individualTeacher",
-    ownerId: user.uid,
-    transferCode: "",
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
+  const roles = { schoolAdmin: false, departmentHead: false, teacher: true, pupil: false };
+  const schoolRef = doc(db, "schools", workspaceId);
+  const userRef = doc(db, "users", user.uid);
+  const workspaceRef = doc(db, "users", user.uid, "workspaces", workspaceId);
+  await runTransaction(db, async (transaction) => {
+    const [activationSnap, userSnap] = await Promise.all([transaction.get(activationInfo.ref), transaction.get(userRef)]);
+    if (userSnap.exists()) throw new Error("This account already has a FeedbackLoop profile. Use Sign in instead.");
+    if (!activationSnap.exists() || activationSnap.data().active !== true || activationSnap.data().redeemedBy) throw new Error("That activation code is no longer available.");
+    if ((activationSnap.data().accountType || activationSnap.data().workspaceType) !== "independentTeacher") throw new Error("That code is not for an independent teacher workspace.");
+    if (activationSnap.data().assignedEmail && String(activationSnap.data().assignedEmail).toLowerCase() !== String(user.email || "").toLowerCase()) throw new Error("That activation code was issued for a different email address.");
+    transaction.set(schoolRef, {
+      name, shortName: name, active: access.workspaceStatus !== "paused", workspaceStatus: access.workspaceStatus,
+      licence: access.licence, activationCode: activationInfo.code, workspaceType: "individualTeacher", ownerId: user.uid,
+      transferCode: "", createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    });
+    transaction.set(userRef, {
+      displayName: realName, email: user.email || "", role: "teacher", roles, roleSchemaVersion: 2, schoolId: workspaceId,
+      departmentIds: [departmentId], departmentHeadDepartmentIds: [], learnerId: null, schoolHistoryIds: [], workspaceIds: [workspaceId],
+      workspaceOwner: true, authProvider, active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    });
+    transaction.set(workspaceRef, {
+      uid: user.uid, schoolId: workspaceId, role: "teacher", roles, roleSchemaVersion: 2, departmentIds: [departmentId],
+      departmentHeadDepartmentIds: [], workspaceOwner: true, authProvider, active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    });
+    transaction.update(activationInfo.ref, {
+      redeemedBy: user.uid, redeemedEmail: user.email || "", redeemedWorkspaceId: workspaceId,
+      redeemedAt: serverTimestamp(), active: false
+    });
   });
-  batch.set(doc(db, "users", user.uid), {
-    displayName: realName,
-    email: user.email || "",
-    role: "teacher",
-    schoolId: workspaceId,
-    departmentIds: [departmentId],
-    learnerId: null,
-    schoolHistoryIds: [],
-    workspaceIds: [workspaceId],
-    workspaceOwner: true,
-    authProvider,
-    active: true,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  batch.set(doc(db, "users", user.uid, "workspaces", workspaceId), {
-    uid: user.uid,
-    schoolId: workspaceId,
-    role: "teacher",
-    departmentIds: [departmentId],
-    workspaceOwner: true,
-    authProvider,
-    active: true,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  await batch.commit();
   try {
     const setupBatch = writeBatch(db);
     setupBatch.set(doc(db, "schools", workspaceId, "departments", departmentId), {
@@ -524,40 +623,126 @@ async function createIndependentWorkspaceForUser(user, { displayName, workspaceN
   return user;
 }
 
-export async function registerIndependentTeacher({ displayName, workspaceName, email, password }) {
+export async function registerIndependentTeacher({ displayName, workspaceName, email, password, activationCode }) {
   if (isDemoMode) return demoSignInAs("teacher");
   await firebaseReady;
   const result = await createUserWithEmailAndPassword(auth, email, password);
   try {
-    return await createIndependentWorkspaceForUser(result.user, { displayName, workspaceName, authProvider: "password" });
+    return await createIndependentWorkspaceForUser(result.user, { displayName, workspaceName, activationCode, authProvider: "password" });
   } catch (error) {
     try { await deleteUser(result.user); } catch (cleanupError) { console.warn("Could not remove incomplete teacher account.", cleanupError); }
     throw error;
   }
 }
 
-export async function registerIndependentTeacherGoogle({ workspaceName }) {
+export async function registerIndependentTeacherGoogle({ workspaceName, activationCode }) {
   if (isDemoMode) return demoSignInAs("teacher");
   await firebaseReady;
   const user = await signInWithGoogle();
-  return createIndependentWorkspaceForUser(user, { displayName: user.displayName, workspaceName, authProvider: "google" });
+  return createIndependentWorkspaceForUser(user, { displayName: user.displayName, workspaceName, activationCode, authProvider: "google" });
+}
+
+async function createSchoolWorkspaceForUser(user, { displayName, schoolName, authProvider, activationCode, assignTeacher = false }) {
+  const realName = String(displayName || user?.displayName || "").trim();
+  const name = String(schoolName || "").trim();
+  if (!realName || !name) throw new Error("Enter your full name and the school name.");
+  const existingProfile = await getDoc(doc(db, "users", user.uid));
+  if (existingProfile.exists()) throw new Error("This account already has a FeedbackLoop profile. Use Sign in instead.");
+  const activationInfo = await loadActivationCode(activationCode, "school", user.email || "");
+  const access = workspaceLicenceFromActivation(activationInfo.activation);
+  const schoolId = `${safeWorkspaceSlug(name)}-${user.uid.slice(0, 8)}`;
+  const roles = { schoolAdmin: true, departmentHead: false, teacher: assignTeacher === true || assignTeacher === "on" || assignTeacher === "true", pupil: false };
+  const transferCode = `${schoolId}~${makeUuid().replaceAll("-", "").slice(0, 10).toUpperCase()}`;
+  await updateProfile(user, { displayName: realName });
+  const schoolRef = doc(db, "schools", schoolId);
+  const userRef = doc(db, "users", user.uid);
+  const workspaceRef = doc(db, "users", user.uid, "workspaces", schoolId);
+  const profileData = {
+    displayName: realName, email: user.email || "", schoolId, role: primaryRoleForRoles(roles), roles, roleSchemaVersion: 2,
+    departmentIds: [], departmentHeadDepartmentIds: [], learnerId: null, schoolHistoryIds: [], workspaceIds: [schoolId],
+    workspaceOwner: false, authProvider, active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+  };
+  await runTransaction(db, async (transaction) => {
+    const [activationSnap, userSnap] = await Promise.all([transaction.get(activationInfo.ref), transaction.get(userRef)]);
+    if (userSnap.exists()) throw new Error("This account already has a FeedbackLoop profile. Use Sign in instead.");
+    if (!activationSnap.exists() || activationSnap.data().active !== true || activationSnap.data().redeemedBy) throw new Error("That activation code is no longer available.");
+    if ((activationSnap.data().accountType || activationSnap.data().workspaceType) !== "school") throw new Error("That code is not for a school workspace.");
+    if (activationSnap.data().assignedEmail && String(activationSnap.data().assignedEmail).toLowerCase() !== String(user.email || "").toLowerCase()) throw new Error("That activation code was issued for a different email address.");
+    transaction.set(schoolRef, {
+      name, shortName: name, workspaceType: "school", creatorId: user.uid,
+      active: access.workspaceStatus !== "paused", workspaceStatus: access.workspaceStatus, licence: access.licence,
+      activationCode: activationInfo.code, emergencyManagementAccess: true, transferCode,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    });
+    transaction.set(userRef, profileData);
+    transaction.set(workspaceRef, {
+      uid: user.uid, schoolId, role: primaryRoleForRoles(roles), roles, roleSchemaVersion: 2, departmentIds: [], departmentHeadDepartmentIds: [],
+      workspaceOwner: false, authProvider, active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+    });
+    transaction.update(activationInfo.ref, {
+      redeemedBy: user.uid, redeemedEmail: user.email || "", redeemedWorkspaceId: schoolId,
+      redeemedAt: serverTimestamp(), active: false
+    });
+  });
+  try {
+    await addDoc(collection(db, "schools", schoolId, "auditLogs"), { action: "schoolActivated", userId: user.uid, userName: realName, activationCode: activationInfo.code, createdAt: serverTimestamp() });
+  } catch (error) { console.warn("School created but activation audit could not be written.", error); }
+  if (authProvider === "password" && !user.emailVerified) {
+    try { await sendEmailVerification(user, { url: appSettings.publicAppUrl }); } catch (error) { console.warn("School created, but the verification email could not be sent.", error); }
+  }
+  return user;
+}
+
+export async function registerSchoolWithActivation({ displayName, schoolName, email, password, activationCode, assignTeacher }) {
+  if (isDemoMode) return demoSignInAs("schoolAdmin");
+  await firebaseReady;
+  const result = await createUserWithEmailAndPassword(auth, email, password);
+  try {
+    return await createSchoolWorkspaceForUser(result.user, { displayName, schoolName, activationCode, assignTeacher, authProvider: "password" });
+  } catch (error) {
+    try { await deleteUser(result.user); } catch (cleanupError) { console.warn("Could not remove incomplete school account.", cleanupError); }
+    throw error;
+  }
+}
+
+export async function registerSchoolWithActivationGoogle({ schoolName, activationCode, assignTeacher }) {
+  if (isDemoMode) return demoSignInAs("schoolAdmin");
+  await firebaseReady;
+  const user = await signInWithGoogle();
+  return createSchoolWorkspaceForUser(user, { displayName: user.displayName, schoolName, activationCode, assignTeacher, authProvider: "google" });
 }
 
 export async function joinTeacherWorkspace(profile, inviteCode) {
   if (isDemoMode) return profile;
   await firebaseReady;
-  if (!profile || profile.role !== "teacher") throw new Error("Only a teacher account can join a department using this option.");
+  if (!profile || !isStaffProfile(profile)) throw new Error("Only an existing staff account can join a staff workspace using this option.");
   const { code, schoolId, invite } = await loadInvite(inviteCode);
-  if (invite.role !== "teacher") throw new Error("Enter a teacher department code.");
+  if (!["teacher", "departmentHead", "staff"].includes(invite.role)) throw new Error("Enter a school staff code.");
+  const inviteAccess = normaliseRoleAccess({ role: invite.role === "staff" ? "teacher" : invite.role, roles: invite.roles, departmentIds: invite.departmentIds || [], departmentHeadDepartmentIds: invite.departmentHeadDepartmentIds || (invite.role === "departmentHead" ? invite.departmentIds || [] : []) });
   const workspaceRef = doc(db, "users", profile.id, "workspaces", schoolId);
   const existing = await getDoc(workspaceRef);
   if (existing.exists()) {
-    await switchWorkspace(profile, schoolId);
+    const currentAccess = normaliseRoleAccess(existing.data());
+    const mergedRoles = {
+      schoolAdmin: currentAccess.roles.schoolAdmin || inviteAccess.roles.schoolAdmin,
+      departmentHead: currentAccess.roles.departmentHead || inviteAccess.roles.departmentHead,
+      teacher: currentAccess.roles.teacher || inviteAccess.roles.teacher || inviteAccess.roles.departmentHead,
+      pupil: false
+    };
+    const mergedHeadDepartments = [...new Set([...(currentAccess.departmentHeadDepartmentIds || []), ...(inviteAccess.departmentHeadDepartmentIds || [])])];
+    const mergedDepartments = [...new Set([...(currentAccess.departmentIds || []), ...(inviteAccess.departmentIds || []), ...mergedHeadDepartments])];
+    const payload = { role: primaryRoleForRoles(mergedRoles), roles: mergedRoles, roleSchemaVersion: 2, departmentIds: mergedDepartments, departmentHeadDepartmentIds: mergedHeadDepartments, inviteCode: code, active: true, updatedAt: serverTimestamp() };
+    const batch = writeBatch(db);
+    batch.update(workspaceRef, payload);
+    batch.update(doc(db, "users", profile.id), { schoolId, ...payload, workspaceIds: arrayUnion(schoolId), workspaceOwner: existing.data().workspaceOwner === true });
+    for (const departmentId of mergedHeadDepartments) {
+      const departmentRef = doc(db, "schools", schoolId, "departments", departmentId);
+      const departmentSnap = await getDoc(departmentRef);
+      if (departmentSnap.exists()) batch.update(departmentRef, { headIds: arrayUnion(profile.id), updatedAt: serverTimestamp() });
+    }
+    await batch.commit();
     for (const classId of invite.classIds || []) {
-      await updateDoc(doc(db, "schools", schoolId, "classes", classId), {
-        teacherIds: arrayUnion(profile.id),
-        updatedAt: serverTimestamp()
-      });
+      await updateDoc(doc(db, "schools", schoolId, "classes", classId), { teacherIds: arrayUnion(profile.id), updatedAt: serverTimestamp() });
     }
     return getUserProfile(auth.currentUser);
   }
@@ -565,8 +750,11 @@ export async function joinTeacherWorkspace(profile, inviteCode) {
   batch.set(workspaceRef, {
     uid: profile.id,
     schoolId,
-    role: "teacher",
-    departmentIds: invite.departmentIds || [],
+    role: inviteAccess.role,
+    roles: inviteAccess.roles,
+    roleSchemaVersion: 2,
+    departmentIds: inviteAccess.departmentIds,
+    departmentHeadDepartmentIds: inviteAccess.departmentHeadDepartmentIds,
     workspaceOwner: false,
     authProvider: profile.authProvider || providerName(auth.currentUser),
     inviteCode: code,
@@ -576,13 +764,21 @@ export async function joinTeacherWorkspace(profile, inviteCode) {
   });
   batch.update(doc(db, "users", profile.id), {
     schoolId,
-    role: "teacher",
-    departmentIds: invite.departmentIds || [],
+    role: inviteAccess.role,
+    roles: inviteAccess.roles,
+    roleSchemaVersion: 2,
+    departmentIds: inviteAccess.departmentIds,
+    departmentHeadDepartmentIds: inviteAccess.departmentHeadDepartmentIds,
     workspaceOwner: false,
     inviteCode: code,
     workspaceIds: arrayUnion(schoolId),
     updatedAt: serverTimestamp()
   });
+  for (const departmentId of inviteAccess.departmentHeadDepartmentIds || []) {
+    const departmentRef = doc(db, "schools", schoolId, "departments", departmentId);
+    const departmentSnap = await getDoc(departmentRef);
+    if (departmentSnap.exists()) batch.update(departmentRef, { headIds: arrayUnion(profile.id), updatedAt: serverTimestamp() });
+  }
   await batch.commit();
   for (const classId of invite.classIds || []) {
     try {
@@ -621,7 +817,7 @@ export async function loadWorkspaceStructure(profile, schoolId) {
     safeFetch(["schools", schoolId, "subjects"])
   ]);
   if (!schoolSnap.exists() || !membershipSnap.exists() || membershipSnap.data().active === false) throw new Error("You do not have access to that school workspace.");
-  return { school: normaliseDoc(schoolSnap), departments, subjects, membership: membershipSnap.data() };
+  return { school: normaliseDoc(schoolSnap), departments, subjects, membership: { ...membershipSnap.data(), ...normaliseRoleAccess(membershipSnap.data()) } };
 }
 
 export async function createClassMigrationRequest(profile, data) {
@@ -647,7 +843,7 @@ export async function createClassMigrationRequest(profile, data) {
     getDoc(doc(db, "schools", data.destinationSchoolId, "departments", data.destinationDepartmentId)),
     getDoc(doc(db, "schools", data.destinationSchoolId, "subjects", data.destinationSubjectId))
   ]);
-  if (!destinationMembership.exists() || destinationMembership.data().active === false || destinationMembership.data().role !== "teacher") throw new Error("Join the destination school as a teacher before moving a class.");
+  if (!destinationMembership.exists() || destinationMembership.data().active === false || !hasWorkspaceRole(destinationMembership.data(), "teacher")) throw new Error("Join the destination school as a teacher before moving a class.");
   if (!destinationSchool.exists() || !destinationDepartment.exists() || !destinationSubject.exists()) throw new Error("Choose a valid destination department and subject.");
   if (destinationSubject.data().departmentId !== data.destinationDepartmentId) throw new Error("The selected subject does not belong to that department.");
   const payload = {
@@ -706,18 +902,16 @@ export async function completeClassMigration(profile, requestId) {
   if (isDemoMode) {
     const state = getDemoState();
     const request = (state.classMigrationRequests || []).find((item) => item.id === requestId);
-    if (!request || request.status !== "accepted") throw new Error("This class move has not been approved.");
-    request.status = "completed";
-    request.completedAt = new Date().toISOString();
-    saveDemoState(state);
-    return request;
+    if (!request || !["accepted", "migrating"].includes(request.status)) throw new Error("This class move has not been approved.");
+    request.status = "completed"; request.migrationPhase = "completed"; request.completedAt = new Date().toISOString();
+    saveDemoState(state); return request;
   }
   await firebaseReady;
   const requestRef = doc(db, "classMigrationRequests", requestId);
-  const requestSnap = await getDoc(requestRef);
+  let requestSnap = await getDoc(requestRef);
   if (!requestSnap.exists()) throw new Error("Class move request not found.");
-  const request = { id: requestSnap.id, ...requestSnap.data() };
-  if (request.status !== "accepted") throw new Error("This class move must be approved before it can be completed.");
+  let request = { id: requestSnap.id, ...requestSnap.data() };
+  if (!["accepted", "migrating"].includes(request.status)) throw new Error("This class move must be approved before it can be completed.");
   if (request.createdBy !== profile.id) throw new Error("Only the teacher who requested this move can complete it.");
   if (profile.schoolId !== request.destinationSchoolId) throw new Error("Switch to the destination school workspace before completing the move.");
 
@@ -733,61 +927,66 @@ export async function completeClassMigration(profile, requestId) {
   ]);
   const sourceFeedbackIds = new Set(feedbackRecords.map((item) => item.id));
   const relevantActions = feedbackActions.filter((item) => sourceFeedbackIds.has(item.feedbackId));
-  const destinationClassId = migratedDocId(request.id, request.sourceClassId);
+  const destinationClassId = request.destinationClassId || migratedDocId(request.id, request.sourceClassId);
   const destinationTeacherIds = [profile.id];
   for (const teacherId of sourceClass.teacherIds || []) {
     if (destinationTeacherIds.includes(teacherId)) continue;
     try {
       const teacherWorkspace = await getDoc(doc(db, "users", teacherId, "workspaces", request.destinationSchoolId));
-      if (teacherWorkspace.exists() && teacherWorkspace.data().active !== false && ["teacher", "departmentHead"].includes(teacherWorkspace.data().role)) destinationTeacherIds.push(teacherId);
-    } catch (error) {
-      console.warn("Could not check whether a co-teacher has joined the destination school.", teacherId, error);
-    }
+      if (teacherWorkspace.exists() && teacherWorkspace.data().active !== false && hasWorkspaceRole(teacherWorkspace.data(), "teacher")) destinationTeacherIds.push(teacherId);
+    } catch (error) { console.warn("Could not check whether a co-teacher has joined the destination school.", teacherId, error); }
+  }
+  const phases = ["class", "memberships", "assessments", "feedbackRecords", "feedbackActions", "interventions", "pupilReconnection", "completed"];
+  let phaseIndex = Math.max(0, phases.indexOf(request.migrationPhase || "class"));
+  if (request.status === "accepted") {
+    await updateDoc(requestRef, { status: "migrating", migrationPhase: phases[phaseIndex], destinationClassId, startedAt: serverTimestamp(), updatedAt: serverTimestamp() });
   }
   const now = serverTimestamp();
-  const operations = [];
-  operations.push({
-    ref: doc(db, "schools", request.destinationSchoolId, "classes", destinationClassId),
-    data: {
-      ...sourceClass,
-      subjectId: request.destinationSubjectId,
-      departmentId: request.destinationDepartmentId,
-      teacherIds: destinationTeacherIds,
-      active: true,
-      migrationRequestId: request.id,
-      migrationOriginWorkspaceId: request.sourceWorkspaceId,
-      migrationOriginClassId: request.sourceClassId,
-      createdAt: sourceClass.createdAt || now,
-      updatedAt: now
-    },
-    options: { merge: true }
-  });
-  for (const item of memberships) {
-    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "memberships", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, active: item.active !== false, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  const advance = async (nextPhase, extra = {}) => {
+    await updateDoc(requestRef, { status: nextPhase === "completed" ? "completed" : "migrating", migrationPhase: nextPhase, destinationClassId, ...extra, updatedAt: serverTimestamp(), ...(nextPhase === "completed" ? { completedAt: serverTimestamp() } : {}) });
+    phaseIndex = phases.indexOf(nextPhase);
+  };
+  if (phaseIndex <= 0) {
+    await commitSetOperations([{ ref: doc(db, "schools", request.destinationSchoolId, "classes", destinationClassId), data: { ...sourceClass, subjectId: request.destinationSubjectId, departmentId: request.destinationDepartmentId, teacherIds: destinationTeacherIds, active: true, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginClassId: request.sourceClassId, createdAt: sourceClass.createdAt || now, updatedAt: now }, options: { merge: true } }]);
+    await advance("memberships");
   }
-  for (const item of assessments) {
-    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "assessments", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  if (phaseIndex <= 1) {
+    await commitSetOperations(memberships.map((item) => ({ ref: doc(db, "schools", request.destinationSchoolId, "memberships", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, active: item.active !== false, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } })));
+    await advance("assessments", { copiedMembershipCount: memberships.length });
   }
-  for (const item of feedbackRecords) {
-    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "feedbackRecords", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  if (phaseIndex <= 2) {
+    await commitSetOperations(assessments.map((item) => ({ ref: doc(db, "schools", request.destinationSchoolId, "assessments", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } })));
+    await advance("feedbackRecords", { copiedAssessmentCount: assessments.length });
   }
-  for (const item of relevantActions) {
-    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "feedbackActions", migratedDocId(request.id, item.id)), data: { ...item, feedbackId: migratedDocId(request.id, item.feedbackId), migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  if (phaseIndex <= 3) {
+    await commitSetOperations(feedbackRecords.map((item) => ({ ref: doc(db, "schools", request.destinationSchoolId, "feedbackRecords", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } })));
+    await advance("feedbackActions", { copiedFeedbackCount: feedbackRecords.length });
   }
-  for (const item of interventions) {
-    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "interventions", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  if (phaseIndex <= 4) {
+    await commitSetOperations(relevantActions.map((item) => ({ ref: doc(db, "schools", request.destinationSchoolId, "feedbackActions", migratedDocId(request.id, item.id)), data: { ...item, feedbackId: migratedDocId(request.id, item.feedbackId), migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } })));
+    await advance("interventions", { copiedActionCount: relevantActions.length });
   }
-  await commitSetOperations(operations);
-  await updateDoc(requestRef, {
-    status: "completed",
-    destinationClassId,
-    copiedMembershipCount: memberships.length,
-    copiedAssessmentCount: assessments.length,
-    copiedFeedbackCount: feedbackRecords.length,
-    completedAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  return { ...request, status: "completed", destinationClassId };
+  if (phaseIndex <= 5) {
+    await commitSetOperations(interventions.map((item) => ({ ref: doc(db, "schools", request.destinationSchoolId, "interventions", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } })));
+    await advance("pupilReconnection", { copiedInterventionCount: interventions.length });
+  }
+  if (phaseIndex <= 6) {
+    let reconnectedPupilCount = 0;
+    for (const membership of memberships.filter((item) => item.active !== false)) {
+      const pupilRef = doc(db, "users", membership.userId);
+      const pupilSnap = await getDoc(pupilRef);
+      if (!pupilSnap.exists() || !isPupilProfile(pupilSnap.data())) continue;
+      const batch = writeBatch(db);
+      batch.set(doc(db, "users", membership.userId, "workspaces", request.destinationSchoolId), { uid: membership.userId, schoolId: request.destinationSchoolId, role: "pupil", roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true }, roleSchemaVersion: 2, departmentIds: [request.destinationDepartmentId], departmentHeadDepartmentIds: [], workspaceOwner: false, active: true, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginMembershipId: membership.id, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
+      batch.update(pupilRef, { workspaceIds: arrayUnion(request.destinationSchoolId), schoolHistoryIds: arrayUnion(request.destinationSchoolId), lastMigrationRequestId: request.id, updatedAt: serverTimestamp() });
+      await batch.commit();
+      reconnectedPupilCount += 1;
+    }
+    await advance("completed", { reconnectedPupilCount });
+  }
+  try { await addDoc(collection(db, "schools", request.destinationSchoolId, "auditLogs"), { action: "classMigrationCompleted", userId: profile.id, userName: profile.displayName, migrationRequestId: request.id, sourceClassId: request.sourceClassId, destinationClassId, createdAt: serverTimestamp() }); } catch (error) { console.warn("Migration completed but audit entry could not be written.", error); }
+  requestSnap = await getDoc(requestRef);
+  return { id: requestSnap.id, ...requestSnap.data() };
 }
 
 export async function switchWorkspace(profile, schoolId) {
@@ -796,13 +995,20 @@ export async function switchWorkspace(profile, schoolId) {
   const membershipSnap = await getDoc(doc(db, "users", profile.id, "workspaces", schoolId));
   if (!membershipSnap.exists() || membershipSnap.data().active === false) throw new Error("You no longer have access to that workspace.");
   const membership = membershipSnap.data();
-  await updateDoc(doc(db, "users", profile.id), {
+  const access = normaliseRoleAccess(membership);
+  const batch = writeBatch(db);
+  batch.set(doc(db, "users", profile.id, "workspaces", schoolId), { ...access, updatedAt: serverTimestamp() }, { merge: true });
+  batch.update(doc(db, "users", profile.id), {
     schoolId,
-    role: membership.role,
-    departmentIds: membership.departmentIds || [],
+    role: access.role,
+    roles: access.roles,
+    roleSchemaVersion: 2,
+    departmentIds: access.departmentIds,
+    departmentHeadDepartmentIds: access.departmentHeadDepartmentIds,
     workspaceOwner: membership.workspaceOwner === true,
     updatedAt: serverTimestamp()
   });
+  await batch.commit();
   return getUserProfile(auth.currentUser);
 }
 
@@ -813,9 +1019,29 @@ export async function getUserProfile(user) {
   const snap = await getDoc(doc(db, "users", user.uid));
   if (!snap.exists()) return null;
   const profile = normaliseDoc(snap);
+  const needsRoleUpgrade = profile.roleSchemaVersion !== 2 || !profile.roles;
+  const access = normaliseRoleAccess(profile);
+  Object.assign(profile, access);
   profile.workspaceIds = Array.isArray(profile.workspaceIds) && profile.workspaceIds.length
     ? profile.workspaceIds
     : [profile.schoolId].filter(Boolean);
+  if (needsRoleUpgrade) {
+    try {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "users", user.uid), { ...access, workspaceIds: profile.workspaceIds, updatedAt: serverTimestamp() });
+      if (profile.schoolId) batch.set(doc(db, "users", user.uid, "workspaces", profile.schoolId), {
+        ...access,
+        uid: user.uid,
+        schoolId: profile.schoolId,
+        workspaceOwner: profile.workspaceOwner === true,
+        authProvider: profile.authProvider || providerName(user),
+        active: profile.active !== false,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+      await batch.commit();
+      profile.roleSchemaVersion = 2;
+    } catch (error) { console.warn("Legacy role data could not be persisted yet; the browser will continue using the converted permissions.", error); }
+  }
   profile.authProvider = profile.authProvider || providerName(user);
 
   if (user.email && profile.email !== user.email) {
@@ -845,8 +1071,9 @@ export async function loadAppData(profile) {
   const workspaceSnaps = await Promise.all(workspaceIds.map((id) => getDoc(doc(db, "schools", id))));
   const workspaces = workspaceSnaps.filter((snap) => snap.exists()).map(normaliseDoc);
   const school = workspaces.find((item) => item.id === schoolId) || { id: schoolId, name: "School" };
-  const isPupil = profile.role === "pupil";
-  const staff = ["schoolAdmin", "departmentHead", "teacher"].includes(profile.role);
+  const profileAccess = normaliseRoleAccess(profile);
+  const isPupil = profileAccess.roles.pupil;
+  const staff = profileAccess.roles.schoolAdmin || profileAccess.roles.departmentHead || profileAccess.roles.teacher;
 
   const [departments, subjects, classes] = await Promise.all([
     safeFetch(["schools", schoolId, "departments"]),
@@ -863,18 +1090,19 @@ export async function loadAppData(profile) {
       ]).then(([activeUsers, workspaceUsers]) => [...activeUsers, ...workspaceUsers].filter((item, index, array) => array.findIndex((other) => other.id === item.id) === index))
     : Promise.resolve([profile]);
 
-  const [users, memberships, assessments, feedbackRecords, feedbackActions, interventions, invites] = await Promise.all([
+  const [users, memberships, assessments, feedbackRecords, feedbackActions, interventions, invites, auditLogs] = await Promise.all([
     usersPromise,
     isPupil ? safeFetch(["schools", schoolId, "memberships"], [memberConstraint]) : safeFetch(["schools", schoolId, "memberships"]),
     isPupil ? safeFetch(["schools", schoolId, "assessments"], [pupilConstraint]) : safeFetch(["schools", schoolId, "assessments"]),
     isPupil ? safeFetch(["schools", schoolId, "feedbackRecords"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackRecords"]),
     isPupil ? safeFetch(["schools", schoolId, "feedbackActions"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackActions"]),
     isPupil ? Promise.resolve([]) : safeFetch(["schools", schoolId, "interventions"]),
-    profile.role === "schoolAdmin"
+    profileAccess.roles.schoolAdmin
       ? safeFetch(["schools", schoolId, "invites"])
       : staff
         ? safeFetch(["schools", schoolId, "invites"], [where("createdBy", "==", profile.id)])
-        : Promise.resolve([])
+        : Promise.resolve([]),
+    profileAccess.roles.schoolAdmin ? safeFetch(["schools", schoolId, "auditLogs"]) : Promise.resolve([])
   ]);
 
   const scopedUsers = staff
@@ -885,8 +1113,7 @@ export async function loadAppData(profile) {
           const membership = membershipSnap.data();
           return {
             ...user,
-            role: membership.role || user.role,
-            departmentIds: membership.departmentIds || user.departmentIds || [],
+            ...normaliseRoleAccess({ ...user, ...membership }),
             workspaceOwner: membership.workspaceOwner === true,
             authProvider: membership.authProvider || user.authProvider
           };
@@ -896,7 +1123,7 @@ export async function loadAppData(profile) {
       }))
     : users;
 
-  const migrationToPromise = ["schoolAdmin", "departmentHead"].includes(profile.role)
+  const migrationToPromise = (profileAccess.roles.schoolAdmin || profileAccess.roles.departmentHead)
     ? safeFetch(["classMigrationRequests"], [where("destinationSchoolId", "==", schoolId)])
     : Promise.resolve([]);
 
@@ -905,7 +1132,7 @@ export async function loadAppData(profile) {
     safeFetch(["transferRequests"], [where("toSchoolId", "==", schoolId)]),
     isPupil
       ? safeFetch(["emailChangeRequests"], [where("pupilId", "==", profile.id)])
-      : profile.role === "schoolAdmin"
+      : profileAccess.roles.schoolAdmin
         ? safeFetch(["emailChangeRequests"], [where("schoolId", "==", schoolId)])
         : Promise.resolve([]),
     staff ? safeFetch(["classMigrationRequests"], [where("sourceWorkspaceId", "==", schoolId)]) : Promise.resolve([]),
@@ -926,6 +1153,7 @@ export async function loadAppData(profile) {
     feedbackActions,
     interventions,
     invites,
+    auditLogs,
     transferRequests: [...transferFrom, ...transferTo].filter((x, i, arr) => arr.findIndex((y) => y.id === x.id) === i),
     emailChangeRequests,
     classMigrationRequests: [...migrationFrom, ...migrationTo, ...migrationMine].filter((x, i, arr) => arr.findIndex((y) => y.id === x.id) === i)
@@ -1047,6 +1275,82 @@ export async function updateUserProfile(userId, changes) {
   }
   await firebaseReady;
   await updateDoc(doc(db, "users", userId), { ...changes, updatedAt: serverTimestamp() });
+}
+
+export async function updateStaffRoles(profile, targetUserId, { roles: requestedRoles, departmentHeadDepartmentIds = [] }) {
+  if (!profile || !rolesFromLegacy(profile.role, profile.roles).schoolAdmin) throw new Error("Only a school administrator can change staff permissions.");
+  const schoolId = profile.schoolId;
+  if (isDemoMode) {
+    const state = getDemoState();
+    const target = state.users.find((item) => item.id === targetUserId);
+    if (!target) throw new Error("Staff account not found.");
+    const roles = rolesFromLegacy(null, requestedRoles);
+    if (roles.departmentHead) roles.teacher = true;
+    if (!roles.schoolAdmin && !roles.departmentHead && !roles.teacher) throw new Error("A staff account must keep at least one staff permission.");
+    if (!roles.teacher && state.classes.some((item) => (item.teacherIds || []).includes(targetUserId))) throw new Error("Reassign this teacher's classes before removing teacher access.");
+    const admins = state.users.filter((item) => rolesFromLegacy(item.role, item.roles).schoolAdmin && item.id !== targetUserId);
+    if (!roles.schoolAdmin && !admins.length) throw new Error("Appoint another school administrator before removing the final administrator.");
+    Object.assign(target, { roles, role: primaryRoleForRoles(roles), roleSchemaVersion: 2, departmentHeadDepartmentIds, departmentIds: [...new Set([...(target.departmentIds || []), ...departmentHeadDepartmentIds])] });
+    state.departments.forEach((department) => { department.headIds = [...new Set([...(department.headIds || []).filter((id) => id !== targetUserId), ...(departmentHeadDepartmentIds.includes(department.id) ? [targetUserId] : [])])]; });
+    state.auditLogs = state.auditLogs || []; state.auditLogs.push({ id: randomId("audit-"), action: "staffRolesChanged", userId: profile.id, targetUserId, createdAt: new Date().toISOString() });
+    saveDemoState(state); return clone(target);
+  }
+  await firebaseReady;
+  const targetWorkspaceRef = doc(db, "users", targetUserId, "workspaces", schoolId);
+  const [targetWorkspaceSnap, targetUserSnap, departments, classes, schoolSnap] = await Promise.all([
+    getDoc(targetWorkspaceRef), getDoc(doc(db, "users", targetUserId)), fetchCollection(["schools", schoolId, "departments"]), fetchCollection(["schools", schoolId, "classes"]), getDoc(doc(db, "schools", schoolId))
+  ]);
+  if (!targetWorkspaceSnap.exists() || !targetUserSnap.exists()) throw new Error("Staff account not found in this school.");
+  const roles = rolesFromLegacy(null, requestedRoles);
+  roles.pupil = false; if (roles.departmentHead) roles.teacher = true;
+  if (!roles.schoolAdmin && !roles.departmentHead && !roles.teacher) throw new Error("A staff account must keep at least one staff permission.");
+  if (!roles.teacher && classes.some((item) => (item.teacherIds || []).includes(targetUserId))) throw new Error("Reassign this teacher's classes before removing teacher access.");
+  const [activeSchoolUsers, workspaceUsers] = await Promise.all([
+    fetchCollection(["users"], [where("schoolId", "==", schoolId)]),
+    fetchCollection(["users"], [where("workspaceIds", "array-contains", schoolId)])
+  ]);
+  const candidateUsers = [...activeSchoolUsers, ...workspaceUsers].filter((item, index, items) => items.findIndex((other) => other.id === item.id) === index);
+  const users = await Promise.all(candidateUsers.map(async (user) => {
+    try {
+      const ws = await getDoc(doc(db, "users", user.id, "workspaces", schoolId));
+      if (ws.exists()) return { id: user.id, ...ws.data() };
+      return user.schoolId === schoolId ? { id: user.id, ...user } : null;
+    } catch { return user.schoolId === schoolId ? { id: user.id, ...user } : null; }
+  }));
+  const otherAdmins = users.filter((item) => item && item.id !== targetUserId && item.active !== false && hasWorkspaceRole(item, "schoolAdmin"));
+  if (!roles.schoolAdmin && !otherAdmins.length) throw new Error("Appoint another school administrator before removing the final administrator.");
+  const validHeadIds = departmentHeadDepartmentIds.filter((id) => departments.some((department) => department.id === id));
+  const previous = normaliseRoleAccess(targetWorkspaceSnap.data());
+  const emergencyAccess = !schoolSnap.exists() || schoolSnap.data().emergencyManagementAccess !== false;
+  for (const department of departments) {
+    const targetCurrentlyLeads = previous.departmentHeadDepartmentIds.includes(department.id) || (department.headIds || []).includes(targetUserId);
+    const otherHeadExists = users.some((item) => item
+      && item.id !== targetUserId
+      && item.active !== false
+      && hasWorkspaceRole(item, "departmentHead")
+      && normaliseRoleAccess(item).departmentHeadDepartmentIds.includes(department.id));
+    if (!validHeadIds.includes(department.id) && targetCurrentlyLeads && !otherHeadExists && !emergencyAccess) {
+      throw new Error(`Appoint another head for ${department.name} before removing its final department head.`);
+    }
+  }
+  const departmentIds = [...new Set([...(targetWorkspaceSnap.data().departmentIds || []), ...validHeadIds])];
+  const payload = { role: primaryRoleForRoles(roles), roles, roleSchemaVersion: 2, departmentIds, departmentHeadDepartmentIds: validHeadIds, updatedAt: serverTimestamp() };
+  const batch = writeBatch(db);
+  batch.update(targetWorkspaceRef, payload);
+  if (targetUserSnap.data().schoolId === schoolId) batch.update(doc(db, "users", targetUserId), payload);
+  for (const department of departments) {
+    const headIds = [...new Set([...(department.headIds || []).filter((id) => id !== targetUserId), ...(validHeadIds.includes(department.id) ? [targetUserId] : [])])];
+    batch.update(doc(db, "schools", schoolId, "departments", department.id), { headIds, updatedAt: serverTimestamp() });
+  }
+  const auditRef = doc(collection(db, "schools", schoolId, "auditLogs"));
+  batch.set(auditRef, { action: "staffRolesChanged", userId: profile.id, userName: profile.displayName, targetUserId, targetUserName: targetUserSnap.data().displayName || "", previousRoles: previous.roles, newRoles: roles, previousDepartmentHeadDepartmentIds: previous.departmentHeadDepartmentIds, newDepartmentHeadDepartmentIds: validHeadIds, createdAt: serverTimestamp() });
+  await batch.commit();
+  return { id: targetUserId, ...targetUserSnap.data(), ...payload };
+}
+
+export async function writeAuditLog(schoolId, data) {
+  if (isDemoMode) { const state = getDemoState(); state.auditLogs = state.auditLogs || []; state.auditLogs.push({ id: randomId("audit-"), ...data, createdAt: new Date().toISOString() }); saveDemoState(state); return; }
+  await firebaseReady; await addDoc(collection(db, "schools", schoolId, "auditLogs"), { ...data, createdAt: serverTimestamp() });
 }
 
 export async function createEmailChangeRequest(profile, newEmail) {

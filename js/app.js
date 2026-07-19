@@ -644,7 +644,7 @@ function renderPupilFeedback() {
       ${feedback.length ? feedback.map((f) => {
         const action = actionForFeedback(f.id);
         const result = f.percentage !== null && f.percentage !== undefined ? `<div class="result-summary"><strong>${e(f.score)} / ${e(f.maxScore)}</strong><span>${formatPercent(f.percentage)} · ${e(f.grade)}</span></div>` : "";
-        return `<article class="card feedback-card ${String(f.trafficLight).toLowerCase()}"><div class="timeline-meta">${badge(f.feedbackType || "Feedback")} ${badge(f.trafficLight)} ${badge(f.status)}</div><h4>${e(f.assessmentName || f.skill)}</h4><div class="small muted">${dateFmt(f.date)} · ${e(f.skill)}</div>${result}<div class="feedback-section"><strong>What went well</strong><div class="rich-output">${richText(f.strengthHtml, f.strength)}</div></div><div class="feedback-section"><strong>My next step</strong><div class="rich-output">${richText(f.nextStepHtml, f.nextStep)}</div></div>${action ? `<div class="feedback-section"><strong>My reflection</strong><p>${e(action.reflection)}</p></div><div class="feedback-section"><strong>Action taken</strong><p>${e(action.actionTaken)}</p></div>${action.teacherReview ? `<div class="alert alert-success" style="margin-top:13px">Teacher check: ${e(action.teacherReview)}</div>` : ""}` : ""}<div class="form-actions"><button class="btn ${f.status === "closed" ? "btn-ghost" : "btn-primary"} btn-sm" data-action="reflect" data-id="${f.id}">${action ? "Review my action" : "Add reflection and action"}</button></div></article>`;
+        return `<article class="card feedback-card ${String(f.trafficLight).toLowerCase()}"><div class="timeline-meta">${badge(f.feedbackType || "Feedback")} ${badge(f.trafficLight)} ${badge(f.status)}</div><h4>${e(f.assessmentName || f.skill)}</h4><div class="small muted">${dateFmt(f.date)} · ${e(f.skill)}</div>${result}<div class="feedback-section"><strong>What went well</strong><div class="rich-output">${richText(f.strengthHtml, f.strength)}</div></div><div class="feedback-section"><strong>My next step</strong><div class="rich-output">${richText(f.nextStepHtml, f.nextStep)}</div></div>${action ? `<div class="feedback-section"><strong>My reflection</strong><p>${e(action.reflection)}</p></div><div class="feedback-section"><strong>Action taken</strong><p>${e(action.actionTaken)}</p></div>${action.teacherReview ? `<div class="alert alert-success" style="margin-top:13px">Teacher check: ${e(action.teacherReview)}</div>` : ""}` : ""}<div class="form-actions">${f.entrySource === "pupil" ? `<button class="btn btn-ghost btn-sm" data-action="edit-pupil-feedback" data-id="${f.id}">Edit my written feedback</button>` : ""}<button class="btn ${f.status === "closed" ? "btn-ghost" : "btn-primary"} btn-sm" data-action="reflect" data-id="${f.id}">${action ? "Review my action" : "Add reflection and action"}</button></div></article>`;
       }).join("") : `<div class="card empty span-2">No completed feedback records for this subject yet.</div>`}
     </div>`;
 }
@@ -747,7 +747,7 @@ function renderTeacherFeedback() {
   return `<div class="page-head"><div><h1>Live pupil feedback</h1><p>Pupils enter their own records after feedback. Drafts appear here as they autosave, so no teacher data entry is required.</p></div><div class="page-actions">${badge("Listening live")}</div></div>
     <div class="grid grid-4">${kpi("◉", "Open pupil drafts", drafts.length, "Updates appear live")}${kpi("✎", "Submitted records", submitted.length)}${kpi("▤", "Results entered", results.length)}${kpi("✓", "Closed loops", submitted.filter((f) => f.status === "closed").length)}</div>
     <section class="card live-monitor" style="margin-top:18px"><div class="card-head"><div><h3>Incoming drafts</h3><p>This section updates automatically while pupils type on another device.</p></div><span class="live-indicator"><span></span>Live</span></div><div class="card-body live-draft-list">${drafts.length ? drafts.map((f) => `<article class="live-draft"><div class="live-draft-main"><div class="timeline-meta">${badge(f.feedbackType || "Draft")} ${f.grade ? badge(f.grade) : ""}</div><h4>${e(getUserName(f.pupilId))} — ${e(f.assessmentName || "Untitled feedback")}</h4><p>${e(getClassName(f.classId))} · ${e(f.skill || "Topic not entered yet")}</p>${f.percentage !== null && f.percentage !== undefined ? `<strong>${e(f.score)} / ${e(f.maxScore)} · ${formatPercent(f.percentage)}</strong>` : ""}</div><div class="live-draft-side"><small>Saved ${dateFmt(f.autosavedAt || f.updatedAt, { hour: "2-digit", minute: "2-digit" })}</small><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View draft</button></div></article>`).join("") : `<div class="empty">No pupil is currently working on a draft.</div>`}</div></section>
-    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Completed feedback records</h3><p>Marks, grades and pupil-written next steps are shown together.</p></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Pupil</th><th>Type</th><th>Activity</th><th>Result</th><th>Next step</th><th></th></tr></thead><tbody>${submitted.map((f) => `<tr><td>${dateFmt(f.date)}</td><td><button class="table-link" data-action="open-pupil" data-id="${f.pupilId}">${e(getUserName(f.pupilId))}</button><div class="small muted">${e(getClassName(f.classId))}</div></td><td>${badge(f.feedbackType || "Feedback")}</td><td><strong>${e(f.assessmentName || f.skill)}</strong><div class="small muted">${e(f.skill)}</div></td><td>${f.percentage !== null && f.percentage !== undefined ? `${badge(f.grade)} ${formatPercent(f.percentage)}` : "No mark"}</td><td><div class="table-rich">${richText(f.nextStepHtml, f.nextStep)}</div></td><td><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">No completed feedback records yet.</td></tr>`}</tbody></table></div></section>`;
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Completed feedback records</h3><p>Marks, grades and pupil-written next steps are shown together.</p></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Pupil</th><th>Type</th><th>Activity</th><th>Result</th><th>Next step</th><th></th></tr></thead><tbody>${submitted.map((f) => `<tr><td>${dateFmt(f.date)}</td><td><button class="table-link" data-action="open-pupil" data-id="${f.pupilId}">${e(getUserName(f.pupilId))}</button><div class="small muted">${e(getClassName(f.classId))}</div></td><td>${badge(f.feedbackType || "Feedback")}</td><td><strong>${e(f.assessmentName || f.skill)}</strong>${f.needsTeacherReview ? `<div>${badge("Pupil edit to review")}</div>` : ""}<div class="small muted">${e(f.skill)}</div></td><td>${f.percentage !== null && f.percentage !== undefined ? `${badge(f.grade)} ${formatPercent(f.percentage)}` : "No mark"}</td><td><div class="table-rich">${richText(f.nextStepHtml, f.nextStep)}</div></td><td><button class="btn btn-ghost btn-sm" data-action="view-feedback" data-id="${f.id}">View</button></td></tr>`).join("") || `<tr><td colspan="7" class="empty">No completed feedback records yet.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderPupilDirectory() {
@@ -1246,6 +1246,32 @@ function scheduleFeedbackAutosave(form) {
   }, 850);
 }
 
+
+function modalPupilEditFeedback(feedbackId) {
+  const f = byId(state.data.feedbackRecords, feedbackId);
+  if (!f || f.pupilId !== state.profile.id || f.entrySource !== "pupil" || f.status === "draft") {
+    toast("That submitted feedback record is not available to edit.", "error");
+    return;
+  }
+  const result = f.percentage !== null && f.percentage !== undefined
+    ? `<div class="result-summary"><strong>${e(f.score)} / ${e(f.maxScore)}</strong><span>${formatPercent(f.percentage)} · ${e(f.grade)}</span></div>`
+    : `<div class="alert alert-info">This feedback record has no mark attached.</div>`;
+  openModal("Edit my written feedback", `<div class="small muted">${e(f.assessmentName || f.skill)} · ${dateFmt(f.date)} · ${e(getClassName(f.classId))}</div>${result}<form data-form="edit-pupil-feedback" class="form-grid" style="margin-top:16px"><input type="hidden" name="feedbackId" value="${e(f.id)}">${richEditor("strengthHtml", "What went well or what should I remember?", f.strengthHtml || (f.strength ? `<p>${e(f.strength)}</p>` : ""), "Correct or improve your written notes.")}${richEditor("nextStepHtml", "My next steps — what must I watch out for next time?", f.nextStepHtml || (f.nextStep ? `<p>${e(f.nextStep)}</p>` : ""), "Correct or improve your next step.")}<div class="field"><label>How confident do I feel now?</label><select name="trafficLight"><option ${f.trafficLight === "Green" ? "selected" : ""}>Green</option><option ${f.trafficLight === "Amber" ? "selected" : ""}>Amber</option><option ${f.trafficLight === "Red" ? "selected" : ""}>Red</option></select></div><div class="field"><label>Anything else to remember? <span class="muted">(optional)</span></label><input name="pupilNote" value="${e(f.pupilNote || "")}"></div><div class="full alert alert-info"><strong>Your result is protected.</strong><p>You can correct your own written feedback, confidence colour and reminder. Only a teacher can change the mark, total, percentage or grade.</p></div><div class="form-actions full"><button class="btn btn-primary">Save my corrections</button></div></form>`);
+}
+
+function modalEditFeedbackResult(feedbackId) {
+  const f = byId(state.data.feedbackRecords, feedbackId);
+  if (!f || state.profile.role === "pupil") {
+    toast("Only teaching staff can edit a result.", "error");
+    return;
+  }
+  openModal("Edit assessment result", `<div class="small muted">${e(getUserName(f.pupilId))} · ${e(f.assessmentName || f.skill)} · ${e(getClassName(f.classId))}</div><form data-form="edit-feedback-result" class="form-grid" data-grade-calculator style="margin-top:16px"><input type="hidden" name="feedbackId" value="${e(f.id)}"><div class="field"><label>Mark</label><input type="number" step="0.5" min="0" name="score" value="${e(f.score ?? "")}" required data-score></div><div class="field"><label>Maximum mark</label><input type="number" step="0.5" min="0.5" name="maxScore" value="${e(f.maxScore ?? "")}" required data-max-score></div><div class="field full"><div class="alert alert-info" data-grade-preview></div><span class="field-help">The percentage and detailed grade are recalculated automatically.</span></div><div class="form-actions full"><button class="btn btn-primary">Save corrected result</button></div></form>`);
+  queueMicrotask(() => {
+    const form = document.querySelector('form[data-form="edit-feedback-result"]');
+    if (form) updateGradePreview(form);
+  });
+}
+
 function modalReflection(feedbackId) {
   const f = byId(state.data.feedbackRecords, feedbackId);
   const action = actionForFeedback(feedbackId);
@@ -1261,7 +1287,10 @@ function modalReviewAction(feedbackId) {
 function modalViewFeedback(feedbackId) {
   const f = byId(state.data.feedbackRecords, feedbackId);
   const action = actionForFeedback(feedbackId);
-  openModal(f.status === "draft" ? "Live feedback draft" : "Feedback record", `<div class="timeline-meta">${badge(f.feedbackType || "Feedback")} ${badge(f.trafficLight)} ${badge(f.status)}</div><h3>${e(f.assessmentName || f.skill)}</h3><div class="small muted">${dateFmt(f.date)} · ${e(getUserName(f.pupilId))} · ${e(getClassName(f.classId))}</div>${f.percentage !== null && f.percentage !== undefined ? `<div class="result-summary"><strong>${e(f.score)} / ${e(f.maxScore)}</strong><span>${formatPercent(f.percentage)} · ${e(f.grade)}</span></div>` : ""}<div class="feedback-section"><strong>What went well</strong><div class="rich-output">${richText(f.strengthHtml, f.strength)}</div></div><div class="feedback-section"><strong>Next step</strong><div class="rich-output">${richText(f.nextStepHtml, f.nextStep)}</div></div>${f.status === "draft" ? `<div class="autosave-status" data-state="saved"><span class="autosave-dot"></span><div><strong>Autosaved pupil draft</strong><small>Last saved ${dateFmt(f.autosavedAt || f.updatedAt, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</small></div></div>` : action ? `<div class="feedback-section"><strong>Pupil reflection</strong><p>${e(action.reflection)}</p></div><div class="feedback-section"><strong>Action taken</strong><p>${e(action.actionTaken)}</p></div>` : `<div class="alert alert-warning" style="margin-top:16px">The pupil has not submitted an action yet.</div>`}`);
+  const staffActions = state.profile.role !== "pupil" && f.status !== "draft"
+    ? `<div class="form-actions"><button class="btn btn-ghost" data-action="edit-feedback-result" data-id="${e(f.id)}">${f.percentage !== null && f.percentage !== undefined ? "Edit result" : "Add result"}</button>${f.needsTeacherReview ? `<button class="btn btn-secondary" data-action="acknowledge-feedback-edit" data-id="${e(f.id)}">Mark pupil edit reviewed</button>` : ""}</div>`
+    : "";
+  openModal(f.status === "draft" ? "Live feedback draft" : "Feedback record", `<div class="timeline-meta">${badge(f.feedbackType || "Feedback")} ${badge(f.trafficLight)} ${badge(f.status)} ${f.pupilEditedAt ? badge("Pupil edited") : ""}</div><h3>${e(f.assessmentName || f.skill)}</h3><div class="small muted">${dateFmt(f.date)} · ${e(getUserName(f.pupilId))} · ${e(getClassName(f.classId))}</div>${f.percentage !== null && f.percentage !== undefined ? `<div class="result-summary"><strong>${e(f.score)} / ${e(f.maxScore)}</strong><span>${formatPercent(f.percentage)} · ${e(f.grade)}</span></div>` : ""}${f.needsTeacherReview ? `<div class="alert alert-warning" style="margin-top:16px"><strong>Edited after submission</strong><p>The pupil corrected their written feedback. The result itself has not changed.</p></div>` : ""}<div class="feedback-section"><strong>What went well</strong><div class="rich-output">${richText(f.strengthHtml, f.strength)}</div></div><div class="feedback-section"><strong>Next step</strong><div class="rich-output">${richText(f.nextStepHtml, f.nextStep)}</div></div>${f.status === "draft" ? `<div class="autosave-status" data-state="saved"><span class="autosave-dot"></span><div><strong>Autosaved pupil draft</strong><small>Last saved ${dateFmt(f.autosavedAt || f.updatedAt, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}</small></div></div>` : action ? `<div class="feedback-section"><strong>Pupil reflection</strong><p>${e(action.reflection)}</p></div><div class="feedback-section"><strong>Action taken</strong><p>${e(action.actionTaken)}</p></div>` : `<div class="alert alert-warning" style="margin-top:16px">The pupil has not submitted an action yet.</div>`}${staffActions}`);
 }
 
 function modalPupilDashboard(pupilId) {
@@ -1583,6 +1612,11 @@ app.addEventListener("click", async (event) => {
     });
     return;
   }
+  if (action === "edit-pupil-feedback") return modalPupilEditFeedback(id);
+  if (action === "edit-feedback-result") return modalEditFeedbackResult(id);
+  if (action === "acknowledge-feedback-edit") {
+    await withBusy(actionEl, async()=>{await updateSchoolEntity(state.profile.schoolId, "feedbackRecords", id, { needsTeacherReview: false, editReviewedAt: new Date().toISOString(), editReviewedBy: state.profile.id });await refresh();toast("Pupil correction marked as reviewed.");}); return;
+  }
   if (action === "reflect") return modalReflection(id);
   if (action === "review-action") return modalReviewAction(id);
   if (action === "view-feedback") return modalViewFeedback(id);
@@ -1755,6 +1789,42 @@ app.addEventListener("submit", async (event) => {
         const cls=byId(state.data.classes,data.classId);
         await createSchoolEntity(state.profile.schoolId,"feedbackRecords",{pupilId:data.pupilId,classId:data.classId,subjectId:cls.subjectId,assessmentName:data.assessmentName,date:data.date,skill:data.skill,feedbackType:data.feedbackType,strength:data.strength,nextStep:data.nextStep,trafficLight:data.trafficLight,status:"open",teacherId:state.profile.id,teacherNotes:data.teacherNotes||""});
         closeModal();await refresh();toast("Feedback added.");break;
+      }
+      case "edit-pupil-feedback": {
+        const record = byId(state.data.feedbackRecords, data.feedbackId);
+        if (!record || record.pupilId !== state.profile.id || record.entrySource !== "pupil" || record.status === "draft") throw new Error("That feedback record cannot be edited.");
+        const strengthHtml = sanitiseRichHtml(form.querySelector('[data-rich-field="strengthHtml"]')?.innerHTML || "");
+        const nextStepHtml = sanitiseRichHtml(form.querySelector('[data-rich-field="nextStepHtml"]')?.innerHTML || "");
+        const strength = plainTextFromHtml(strengthHtml);
+        const nextStep = plainTextFromHtml(nextStepHtml);
+        if (!nextStep) throw new Error("Add what you need to watch out for next time.");
+        await updateSchoolEntity(state.profile.schoolId, "feedbackRecords", record.id, {
+          strength, strengthHtml, nextStep, nextStepHtml,
+          trafficLight: data.trafficLight || record.trafficLight || "Amber",
+          pupilNote: data.pupilNote?.trim() || "",
+          pupilEditedAt: new Date().toISOString(),
+          pupilEditCount: Number(record.pupilEditCount || 0) + 1,
+          needsTeacherReview: true
+        });
+        closeModal(); await refresh(); toast("Your written feedback was updated. The mark and grade were not changed."); break;
+      }
+      case "edit-feedback-result": {
+        if (state.profile.role === "pupil") throw new Error("Only teaching staff can edit a result.");
+        const record = byId(state.data.feedbackRecords, data.feedbackId);
+        if (!record) throw new Error("Feedback record not found.");
+        const result = percentageAndGrade(data.score, data.maxScore);
+        const resultChanges = { score: result.score, maxScore: result.maxScore, percentage: result.percentage, grade: result.grade, resultEditedAt: new Date().toISOString(), resultEditedBy: state.profile.id };
+        await updateSchoolEntity(state.profile.schoolId, "feedbackRecords", record.id, resultChanges);
+        let assessmentId = record.assessmentId || "";
+        const assessmentPayload = { pupilId: record.pupilId, classId: record.classId, subjectId: record.subjectId, name: record.assessmentName, topic: record.skill, date: record.date, ...resultChanges, entrySource: record.entrySource || "pupil", verificationStatus: "teacherCorrected", feedbackRecordId: record.id };
+        if (assessmentId) {
+          await updateSchoolEntity(state.profile.schoolId, "assessments", assessmentId, assessmentPayload);
+        } else {
+          const assessment = await createSchoolEntity(state.profile.schoolId, "assessments", assessmentPayload);
+          assessmentId = assessment.id;
+          await updateSchoolEntity(state.profile.schoolId, "feedbackRecords", record.id, { assessmentId });
+        }
+        closeModal(); await refresh(); toast(`Result corrected to ${result.percentage}% · ${result.grade}.`); break;
       }
       case "reflection": {
         const existing=actionForFeedback(data.feedbackId);

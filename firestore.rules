@@ -5,6 +5,10 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
     function hasUser() {
       return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
     }
@@ -13,8 +17,107 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    function isSelf(uid) {
-      return signedIn() && request.auth.uid == uid;
+    function hasV2Role(data, roleName) {
+      return data.roles is map
+        && roleName in data.roles
+        && data.roles[roleName] == true;
+    }
+
+    // V6.2 remains compatible with V6.1 single-role profiles. A legacy
+    // departmentHead is treated as both department head and teacher.
+    function hasRole(data, roleName) {
+      return (roleName == 'pupil' && (hasV2Role(data, 'pupil') || data.role == 'pupil'))
+        || (roleName == 'teacher' && (
+          hasV2Role(data, 'teacher')
+          || hasV2Role(data, 'departmentHead')
+          || data.role in ['teacher', 'departmentHead']
+        ))
+        || (roleName == 'departmentHead' && (hasV2Role(data, 'departmentHead') || data.role == 'departmentHead'))
+        || (roleName == 'schoolAdmin' && (hasV2Role(data, 'schoolAdmin') || data.role == 'schoolAdmin'));
+    }
+
+    function validRoleMap(data) {
+      return data.roles is map
+        && data.roles.schoolAdmin is bool
+        && data.roles.departmentHead is bool
+        && data.roles.teacher is bool
+        && data.roles.pupil is bool
+        && (!data.roles.departmentHead || data.roles.teacher)
+        && (!(data.roles.pupil) || (
+          !data.roles.schoolAdmin && !data.roles.departmentHead && !data.roles.teacher
+        ));
+    }
+
+    function canonicalPrimaryRole(data) {
+      return validRoleMap(data)
+        && (
+          (data.roles.pupil
+            && data.role == 'pupil')
+          || (!data.roles.pupil && data.roles.schoolAdmin
+            && data.role == 'schoolAdmin')
+          || (!data.roles.pupil && !data.roles.schoolAdmin && data.roles.departmentHead
+            && data.role == 'departmentHead')
+          || (!data.roles.pupil && !data.roles.schoolAdmin && !data.roles.departmentHead && data.roles.teacher
+            && data.role == 'teacher')
+        );
+    }
+
+    function sameEffectiveRoles(before, after) {
+      return canonicalPrimaryRole(after)
+        && after.roles.schoolAdmin == hasRole(before, 'schoolAdmin')
+        && after.roles.departmentHead == hasRole(before, 'departmentHead')
+        && after.roles.teacher == hasRole(before, 'teacher')
+        && after.roles.pupil == hasRole(before, 'pupil');
+    }
+
+    function departmentIdsFor(data) {
+      return ('departmentIds' in data && data.departmentIds is list) ? data.departmentIds : [];
+    }
+
+    function headDepartmentIdsFor(data) {
+      return ('departmentHeadDepartmentIds' in data && data.departmentHeadDepartmentIds is list)
+        ? data.departmentHeadDepartmentIds
+        : (hasRole(data, 'departmentHead') ? departmentIdsFor(data) : []);
+    }
+
+    function inviteGrantsRole(invite, roleName) {
+      return (invite.role == 'staff' && invite.roles is map && hasV2Role(invite, roleName))
+        || (roleName == 'pupil' && invite.role == 'pupil')
+        || (roleName == 'teacher' && invite.role in ['teacher', 'departmentHead'])
+        || (roleName == 'departmentHead' && invite.role == 'departmentHead');
+    }
+
+    function profileExtendsWithInvite(before, after) {
+      let invite = inviteData(after.schoolId, after.inviteCode);
+      let inviteHeadIds = inviteHeadDepartments(invite);
+      let beforeDepartmentIds = departmentIdsFor(before);
+      let beforeHeadIds = headDepartmentIdsFor(before);
+      return validInvite(after.schoolId, after.inviteCode)
+        && canonicalPrimaryRole(after)
+        && after.roles.schoolAdmin == (hasRole(before, 'schoolAdmin') || inviteGrantsRole(invite, 'schoolAdmin'))
+        && after.roles.departmentHead == (hasRole(before, 'departmentHead') || inviteGrantsRole(invite, 'departmentHead'))
+        && after.roles.teacher == (hasRole(before, 'teacher') || inviteGrantsRole(invite, 'teacher'))
+        && after.roles.pupil == false
+        && after.departmentIds is list
+        && after.departmentIds.hasAll(beforeDepartmentIds)
+        && after.departmentIds.hasAll(invite.departmentIds)
+        && after.departmentIds.size() <= beforeDepartmentIds.size() + invite.departmentIds.size()
+        && after.departmentHeadDepartmentIds is list
+        && after.departmentHeadDepartmentIds.hasAll(beforeHeadIds)
+        && after.departmentHeadDepartmentIds.hasAll(inviteHeadIds)
+        && after.departmentHeadDepartmentIds.size() <= beforeHeadIds.size() + inviteHeadIds.size();
+    }
+
+    function legacyWorkspaceBootstrap(uid, schoolId, data) {
+      let existing = get(/databases/$(database)/documents/users/$(uid)).data;
+      let expectedDepartmentIds = departmentIdsFor(existing);
+      let expectedHeadIds = headDepartmentIdsFor(existing);
+      return exists(/databases/$(database)/documents/users/$(uid))
+        && existing.schoolId == schoolId
+        && sameEffectiveRoles(existing, data)
+        && data.departmentIds == expectedDepartmentIds
+        && data.departmentHeadDepartmentIds == expectedHeadIds
+        && data.workspaceOwner == (('workspaceOwner' in existing) && existing.workspaceOwner == true);
     }
 
     function hasWorkspaceMembership(schoolId) {
@@ -23,69 +126,83 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId)).data.active != false;
     }
 
-    function isCurrentSchool(schoolId) {
-      return hasUser() && me().schoolId == schoolId;
+    function workspaceMembership(schoolId) {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId)).data;
     }
 
-    function isCurrentSchoolAfter(schoolId) {
-      return signedIn()
-        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
-        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.schoolId == schoolId;
+    function hasWorkspaceRole(schoolId, roleName) {
+      return (
+        hasUser()
+        && me().schoolId == schoolId
+        && hasRole(me(), roleName)
+      ) || (
+        hasWorkspaceMembership(schoolId)
+        && hasRole(workspaceMembership(schoolId), roleName)
+      );
     }
 
-    function isHistoricalSchool(schoolId) {
+    function isPupil(schoolId) {
+      return hasWorkspaceRole(schoolId, 'pupil');
+    }
+
+    function isTeacher(schoolId) {
+      return hasWorkspaceRole(schoolId, 'teacher');
+    }
+
+    function isDepartmentHead(schoolId) {
+      return hasWorkspaceRole(schoolId, 'departmentHead');
+    }
+
+    function isSchoolAdmin(schoolId) {
+      return hasWorkspaceRole(schoolId, 'schoolAdmin') || isIndividualWorkspaceOwner(schoolId);
+    }
+
+    function isStaff(schoolId) {
+      return isTeacher(schoolId) || isDepartmentHead(schoolId) || isSchoolAdmin(schoolId);
+    }
+
+    function isHistoricalPupilSchool(schoolId) {
       return hasUser()
-        && me().role == 'pupil'
+        && hasRole(me(), 'pupil')
         && me().schoolHistoryIds is list
         && me().schoolHistoryIds.hasAny([schoolId]);
     }
 
     function canReadSchool(schoolId) {
-      return isCurrentSchool(schoolId) || hasWorkspaceMembership(schoolId) || isHistoricalSchool(schoolId);
+      return hasWorkspaceMembership(schoolId)
+        || (hasUser() && me().schoolId == schoolId)
+        || isHistoricalPupilSchool(schoolId);
+    }
+
+    function workspaceWritable(schoolId) {
+      let school = get(/databases/$(database)/documents/schools/$(schoolId)).data;
+      return exists(/databases/$(database)/documents/schools/$(schoolId))
+        && (!('active' in school) || school.active != false)
+        && (!('workspaceStatus' in school) || school.workspaceStatus != 'paused');
     }
 
     function isIndividualWorkspaceOwner(schoolId) {
-      return signedIn() && (
-        (
-          exists(/databases/$(database)/documents/schools/$(schoolId))
-          && get(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
-          && get(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid
-          && (
-            isCurrentSchool(schoolId)
-            || (
-              exists(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId))
-              && get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId)).data.workspaceOwner == true
-              && get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(schoolId)).data.active != false
-            )
-          )
-        )
-        ||
-        (
-          isCurrentSchoolAfter(schoolId)
-          && existsAfter(/databases/$(database)/documents/schools/$(schoolId))
-          && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
-          && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid
-        )
-      );
+      return signedIn()
+        && exists(/databases/$(database)/documents/schools/$(schoolId))
+        && get(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
+        && get(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid
+        && (
+          hasWorkspaceMembership(schoolId)
+          || (hasUser() && me().schoolId == schoolId)
+        );
     }
 
-    function isSchoolAdmin(schoolId) {
-      return (isCurrentSchool(schoolId) && me().role == 'schoolAdmin')
-        || isIndividualWorkspaceOwner(schoolId);
-    }
-
-    function isDepartmentHead(schoolId) {
-      return isCurrentSchool(schoolId) && me().role == 'departmentHead';
-    }
-
-    function isTeacher(schoolId) {
-      return isCurrentSchool(schoolId) && me().role == 'teacher';
+    function headDepartmentsFor(schoolId) {
+      let membership = workspaceMembership(schoolId);
+      return ('departmentHeadDepartmentIds' in membership && membership.departmentHeadDepartmentIds is list)
+        ? membership.departmentHeadDepartmentIds
+        : departmentIdsFor(membership);
     }
 
     function leadsDepartment(schoolId, departmentId) {
       return isDepartmentHead(schoolId)
-        && me().departmentIds is list
-        && me().departmentIds.hasAny([departmentId]);
+        && hasWorkspaceMembership(schoolId)
+        && headDepartmentsFor(schoolId).hasAny([departmentId]);
     }
 
     function teachesClass(schoolId, classId) {
@@ -95,50 +212,110 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(classId)).data.teacherIds.hasAny([request.auth.uid]);
     }
 
-    function isStaff(schoolId) {
-      return isSchoolAdmin(schoolId) || isDepartmentHead(schoolId) || isTeacher(schoolId);
-    }
-
     function ownsPupilRecord(data) {
       return signedIn() && data.pupilId == request.auth.uid;
     }
 
-    function validInvite(schoolId, inviteCode, role) {
+    function validInvite(schoolId, inviteCode) {
       return inviteCode is string
         && exists(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode))
-        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.active == true
-        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.role == role;
+        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.active == true;
     }
 
-    function profileMatchesInvite(schoolId, inviteCode) {
-      return validInvite(schoolId, inviteCode, request.resource.data.role)
-        && request.resource.data.departmentIds is list
-        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.departmentIds is list
-        && request.resource.data.departmentIds == get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.departmentIds;
+    function inviteData(schoolId, inviteCode) {
+      return get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data;
     }
 
-    // Registration creates the user profile and any class membership in one
-    // Firestore batch. getAfter() lets the membership rule validate the new
-    // profile that will exist if the whole batch succeeds.
-    function joiningProfileMatchesInvite(schoolId, inviteCode) {
-      return existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
-        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.schoolId == schoolId
-        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.inviteCode == inviteCode
-        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'pupil'
-        && validInvite(
-          schoolId,
-          inviteCode,
-          getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+    function inviteHeadDepartments(invite) {
+      return ('departmentHeadDepartmentIds' in invite && invite.departmentHeadDepartmentIds is list)
+        ? invite.departmentHeadDepartmentIds
+        : (invite.role == 'departmentHead' ? invite.departmentIds : []);
+    }
+
+    function profileMatchesInvite(data) {
+      return 'inviteCode' in data
+        && validInvite(data.schoolId, data.inviteCode)
+        && data.departmentIds == inviteData(data.schoolId, data.inviteCode).departmentIds
+        && data.departmentHeadDepartmentIds == inviteHeadDepartments(inviteData(data.schoolId, data.inviteCode))
+        && canonicalPrimaryRole(data)
+        && (
+          (inviteData(data.schoolId, data.inviteCode).role == 'pupil'
+            && data.roles.pupil
+            && !data.roles.teacher
+            && !data.roles.departmentHead
+            && !data.roles.schoolAdmin)
+          || (inviteData(data.schoolId, data.inviteCode).role == 'teacher'
+            && data.roles.teacher
+            && !data.roles.departmentHead
+            && !data.roles.schoolAdmin
+            && !data.roles.pupil)
+          || (inviteData(data.schoolId, data.inviteCode).role == 'departmentHead'
+            && data.roles.departmentHead
+            && data.roles.teacher
+            && !data.roles.schoolAdmin
+            && !data.roles.pupil)
+          || (inviteData(data.schoolId, data.inviteCode).role == 'staff'
+            && inviteData(data.schoolId, data.inviteCode).roles is map
+            && data.roles == inviteData(data.schoolId, data.inviteCode).roles)
         );
     }
 
-    function inviteCoversClass(schoolId, inviteCode, classId, subjectId) {
-      return inviteCode is string
-        && exists(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode))
-        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.active == true
-        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.classIds is list
-        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.classIds.hasAny([classId])
-        && get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(inviteCode)).data.subjectId == subjectId;
+    function activationConsumedFor(code, uid, workspaceId, accountType) {
+      return code is string
+        && existsAfter(/databases/$(database)/documents/activationCodes/$(code))
+        && getAfter(/databases/$(database)/documents/activationCodes/$(code)).data.active == false
+        && getAfter(/databases/$(database)/documents/activationCodes/$(code)).data.redeemedBy == uid
+        && getAfter(/databases/$(database)/documents/activationCodes/$(code)).data.redeemedWorkspaceId == workspaceId
+        && (
+          ('accountType' in getAfter(/databases/$(database)/documents/activationCodes/$(code)).data
+            && getAfter(/databases/$(database)/documents/activationCodes/$(code)).data.accountType == accountType)
+          || ('workspaceType' in getAfter(/databases/$(database)/documents/activationCodes/$(code)).data
+            && getAfter(/databases/$(database)/documents/activationCodes/$(code)).data.workspaceType == accountType)
+        );
+    }
+
+    function profileMatchesActivation(uid, data) {
+      return existsAfter(/databases/$(database)/documents/schools/$(data.schoolId))
+        && canonicalPrimaryRole(data)
+        && activationConsumedFor(
+          getAfter(/databases/$(database)/documents/schools/$(data.schoolId)).data.activationCode,
+          uid,
+          data.schoolId,
+          data.schoolId == 'personal-' + uid ? 'independentTeacher' : 'school')
+        && (
+          (data.schoolId == 'personal-' + uid
+            && data.roles.teacher
+            && !data.roles.schoolAdmin
+            && !data.roles.departmentHead
+            && !data.roles.pupil
+            && data.workspaceOwner == true)
+          || (data.schoolId != 'personal-' + uid
+            && data.roles.schoolAdmin
+            && !data.roles.departmentHead
+            && !data.roles.pupil
+            && data.workspaceOwner == false)
+        );
+    }
+
+    function migrationRequest(migrationId) {
+      return get(/databases/$(database)/documents/classMigrationRequests/$(migrationId)).data;
+    }
+
+    function migrationWriteAllowed(schoolId, data) {
+      return data.migrationRequestId is string
+        && exists(/databases/$(database)/documents/classMigrationRequests/$(data.migrationRequestId))
+        && migrationRequest(data.migrationRequestId).createdBy == request.auth.uid
+        && migrationRequest(data.migrationRequestId).destinationSchoolId == schoolId
+        && migrationRequest(data.migrationRequestId).status in ['accepted', 'migrating'];
+    }
+
+    function migrationPupilReconnectionAllowed(schoolId, uid, data) {
+      let migration = migrationRequest(data.migrationRequestId);
+      return migrationWriteAllowed(schoolId, data)
+        && data.migrationOriginMembershipId is string
+        && exists(/databases/$(database)/documents/schools/$(migration.sourceWorkspaceId)/memberships/$(data.migrationOriginMembershipId))
+        && get(/databases/$(database)/documents/schools/$(migration.sourceWorkspaceId)/memberships/$(data.migrationOriginMembershipId)).data.userId == uid
+        && get(/databases/$(database)/documents/schools/$(migration.sourceWorkspaceId)/memberships/$(data.migrationOriginMembershipId)).data.classId == migration.sourceClassId;
     }
 
     function approvedTransfer(transferId, pupilId, toSchoolId) {
@@ -149,48 +326,37 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/transferRequests/$(transferId)).data.status == 'accepted';
     }
 
-    function personalWorkspaceId(uid) {
-      return 'personal-' + uid;
-    }
-
-    function personalTeacherProfile(uid) {
-      return request.resource.data.role == 'teacher'
-        && request.resource.data.schoolId == personalWorkspaceId(uid)
-        && request.resource.data.workspaceOwner == true
-        && request.resource.data.workspaceIds is list
-        && request.resource.data.workspaceIds.size() == 1
-        && request.resource.data.workspaceIds[0] == personalWorkspaceId(uid)
-        && existsAfter(/databases/$(database)/documents/schools/$(personalWorkspaceId(uid)))
-        && getAfter(/databases/$(database)/documents/schools/$(personalWorkspaceId(uid))).data.workspaceType == 'individualTeacher'
-        && getAfter(/databases/$(database)/documents/schools/$(personalWorkspaceId(uid))).data.ownerId == uid
-        && existsAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(personalWorkspaceId(uid)));
-    }
-
-    function workspaceProfileUpdate(uid) {
-      return request.resource.data.schoolId is string
-        && existsAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId))
-        && getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.active != false
-        && request.resource.data.role == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.role
-        && request.resource.data.departmentIds == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.departmentIds
-        && request.resource.data.workspaceOwner == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.workspaceOwner
-        && request.resource.data.workspaceIds is list
-        && request.resource.data.workspaceIds.hasAll(resource.data.workspaceIds)
-        && request.resource.data.workspaceIds.hasAny([request.resource.data.schoolId])
-        && request.resource.data.workspaceIds.size() <= resource.data.workspaceIds.size() + 1;
+    match /activationCodes/{code} {
+      // Codes are long owner-issued secrets. Exact gets are permitted for the
+      // activation form, but listing and client-side creation are forbidden.
+      allow get: if true;
+      allow list, create, delete: if false;
+      allow update: if signedIn()
+        && resource.data.active == true
+        && (!('redeemedBy' in resource.data) || resource.data.redeemedBy == null)
+        && request.resource.data.active == false
+        && request.resource.data.redeemedBy == request.auth.uid
+        && request.resource.data.redeemedEmail == request.auth.token.email
+        && request.resource.data.redeemedWorkspaceId is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'active', 'redeemedBy', 'redeemedEmail', 'redeemedWorkspaceId', 'redeemedAt'
+        ]);
     }
 
     match /users/{uid} {
       allow create: if isSelf(uid)
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.schoolId is string
-        && request.resource.data.role in ['schoolAdmin', 'departmentHead', 'teacher', 'pupil']
+        && request.resource.data.roleSchemaVersion == 2
+        && canonicalPrimaryRole(request.resource.data)
         && (
-          profileMatchesInvite(request.resource.data.schoolId, request.resource.data.inviteCode)
-          || personalTeacherProfile(uid)
+          profileMatchesInvite(request.resource.data)
+          || profileMatchesActivation(uid, request.resource.data)
         );
 
       allow read: if isSelf(uid)
-        || (hasUser() && isStaff(me().schoolId)
+        || (hasUser()
+          && isStaff(me().schoolId)
           && (
             resource.data.schoolId == me().schoolId
             || (resource.data.workspaceIds is list && resource.data.workspaceIds.hasAny([me().schoolId]))
@@ -200,275 +366,422 @@ service cloud.firestore {
       allow update: if (
         isSelf(uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'displayName', 'email', 'photoURL', 'preferences', 'lastSeenAt', 'authProvider', 'updatedAt'
+          'displayName', 'email', 'photoURL', 'preferences', 'lastLoginAt',
+          'schoolId', 'role', 'roles', 'roleSchemaVersion', 'departmentIds',
+          'departmentHeadDepartmentIds', 'workspaceOwner', 'workspaceIds',
+          'schoolHistoryIds', 'inviteCode', 'approvedTransferId', 'updatedAt'
         ])
-      ) || (
-        isSelf(uid)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'schoolId', 'role', 'departmentIds', 'workspaceOwner', 'workspaceIds', 'inviteCode', 'updatedAt'
-        ])
-        && workspaceProfileUpdate(uid)
-      ) || (
-        isSelf(uid)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'schoolId', 'schoolHistoryIds', 'approvedTransferId', 'updatedAt'
-        ])
-        && approvedTransfer(
-          request.resource.data.approvedTransferId,
-          uid,
-          request.resource.data.schoolId
+        && (
+          // Workspace switching and joining: the selected profile mirrors the
+          // membership that exists after the batch commits.
+          (
+            request.resource.data.schoolId is string
+            && existsAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId))
+            && getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.active != false
+            && request.resource.data.role == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.role
+            && request.resource.data.roles == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.roles
+            && request.resource.data.departmentIds == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.departmentIds
+            && request.resource.data.departmentHeadDepartmentIds == getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(request.resource.data.schoolId)).data.departmentHeadDepartmentIds
+            && request.resource.data.workspaceIds is list
+            && request.resource.data.workspaceIds.hasAny([request.resource.data.schoolId])
+            && (
+              !('workspaceIds' in resource.data)
+              || request.resource.data.workspaceIds.hasAll(resource.data.workspaceIds)
+            )
+            && request.resource.data.workspaceIds.size() <= (
+              ('workspaceIds' in resource.data && resource.data.workspaceIds is list)
+                ? resource.data.workspaceIds.size() + 1
+                : 1
+            )
+          )
+          // Existing V6.1 profiles may persist their V6.2 permission map on
+          // first sign-in without changing their underlying access.
+          || (
+            request.resource.data.schoolId == resource.data.schoolId
+            && request.resource.data.roleSchemaVersion == 2
+            && sameEffectiveRoles(resource.data, request.resource.data)
+            && request.resource.data.departmentIds == departmentIdsFor(resource.data)
+            && request.resource.data.departmentHeadDepartmentIds == headDepartmentIdsFor(resource.data)
+            && request.resource.data.workspaceIds is list
+            && request.resource.data.workspaceIds.hasAny([resource.data.schoolId])
+            && (
+              !('workspaceIds' in resource.data)
+              || request.resource.data.workspaceIds.hasAll(resource.data.workspaceIds)
+            )
+          )
+          || approvedTransfer(request.resource.data.approvedTransferId, uid, request.resource.data.schoolId)
         )
-      ) || isSchoolAdmin(resource.data.schoolId);
+      ) || (
+        signedIn()
+        && isSchoolAdmin(resource.data.schoolId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'role', 'roles', 'roleSchemaVersion', 'departmentIds',
+          'departmentHeadDepartmentIds', 'updatedAt'
+        ])
+        && canonicalPrimaryRole(request.resource.data)
+      ) || (
+        signedIn()
+        && request.resource.data.workspaceIds is list
+        && request.resource.data.schoolHistoryIds is list
+        && request.resource.data.lastMigrationRequestId is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'workspaceIds', 'schoolHistoryIds', 'lastMigrationRequestId', 'updatedAt'
+        ])
+        && request.resource.data.workspaceIds.hasAll(resource.data.workspaceIds)
+        && request.resource.data.schoolHistoryIds.hasAll(resource.data.schoolHistoryIds)
+        && request.resource.data.workspaceIds.size() <= resource.data.workspaceIds.size() + 1
+        && request.resource.data.schoolHistoryIds.size() <= resource.data.schoolHistoryIds.size() + 1
+        && exists(/databases/$(database)/documents/classMigrationRequests/$(request.resource.data.lastMigrationRequestId))
+        && migrationRequest(request.resource.data.lastMigrationRequestId).createdBy == request.auth.uid
+        && request.resource.data.workspaceIds.hasAny([migrationRequest(request.resource.data.lastMigrationRequestId).destinationSchoolId])
+        && existsAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(migrationRequest(request.resource.data.lastMigrationRequestId).destinationSchoolId))
+        && getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(migrationRequest(request.resource.data.lastMigrationRequestId).destinationSchoolId)).data.migrationRequestId == request.resource.data.lastMigrationRequestId
+        && migrationPupilReconnectionAllowed(
+          migrationRequest(request.resource.data.lastMigrationRequestId).destinationSchoolId,
+          uid,
+          getAfter(/databases/$(database)/documents/users/$(uid)/workspaces/$(migrationRequest(request.resource.data.lastMigrationRequestId).destinationSchoolId)).data
+        )
+      );
 
-      allow delete: if isSchoolAdmin(resource.data.schoolId);
+      allow delete: if false;
 
       match /workspaces/{schoolId} {
-        allow create: if isSelf(uid)
+        allow read: if isSelf(uid) || isStaff(schoolId);
+
+        allow create: if (
+          isSelf(uid)
           && request.resource.data.uid == uid
           && request.resource.data.schoolId == schoolId
           && request.resource.data.active == true
-          && request.resource.data.role in ['schoolAdmin', 'departmentHead', 'teacher', 'pupil']
           && (
+            // Initial account registration or later staff/pupil workspace join.
             (
-              schoolId == personalWorkspaceId(uid)
-              && request.resource.data.role == 'teacher'
-              && request.resource.data.workspaceOwner == true
-              && existsAfter(/databases/$(database)/documents/schools/$(schoolId))
-              && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.workspaceType == 'individualTeacher'
-              && getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == uid
+              request.resource.data.inviteCode is string
+              && validInvite(schoolId, request.resource.data.inviteCode)
+              && profileMatchesInvite(request.resource.data)
+              && existsAfter(/databases/$(database)/documents/users/$(uid))
             )
-            ||
-            (
-              request.resource.data.workspaceOwner == false
-              && validInvite(schoolId, request.resource.data.inviteCode, request.resource.data.role)
-              && request.resource.data.departmentIds == get(/databases/$(database)/documents/schools/$(schoolId)/invites/$(request.resource.data.inviteCode)).data.departmentIds
+            || (
+              existsAfter(/databases/$(database)/documents/schools/$(schoolId))
+              && activationConsumedFor(
+                getAfter(/databases/$(database)/documents/schools/$(schoolId)).data.activationCode,
+                uid,
+                schoolId,
+                schoolId == 'personal-' + uid ? 'independentTeacher' : 'school'
+              )
             )
-          );
+            || legacyWorkspaceBootstrap(uid, schoolId, request.resource.data)
+          )
+        ) || (
+          // A resumable class migration reconnects the existing pupil account
+          // without asking the pupil to create or join a new account.
+          signedIn()
+          && request.resource.data.uid == uid
+          && request.resource.data.schoolId == schoolId
+          && request.resource.data.active == true
+          && request.resource.data.roles.pupil == true
+          && migrationPupilReconnectionAllowed(schoolId, uid, request.resource.data)
+        );
 
-        allow read: if isSelf(uid) || isStaff(schoolId);
-        allow update: if isSchoolAdmin(schoolId);
+        allow update: if (
+          isSelf(uid)
+          && request.resource.data.schoolId == schoolId
+          && request.resource.data.uid == uid
+          && request.resource.data.active != false
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'role', 'roles', 'roleSchemaVersion', 'departmentIds',
+            'departmentHeadDepartmentIds', 'inviteCode', 'updatedAt'
+          ])
+          && (
+            (('inviteCode' in request.resource.data)
+              && profileExtendsWithInvite(resource.data, request.resource.data))
+            || (
+              sameEffectiveRoles(resource.data, request.resource.data)
+              && request.resource.data.departmentIds == departmentIdsFor(resource.data)
+              && request.resource.data.departmentHeadDepartmentIds == headDepartmentIdsFor(resource.data)
+            )
+          )
+        ) || (
+          isSchoolAdmin(schoolId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'role', 'roles', 'roleSchemaVersion', 'departmentIds',
+            'departmentHeadDepartmentIds', 'active', 'updatedAt'
+          ])
+          && canonicalPrimaryRole(request.resource.data)
+        ) || (
+          signedIn()
+          && request.resource.data.uid == uid
+          && request.resource.data.schoolId == schoolId
+          && request.resource.data.active == true
+          && canonicalPrimaryRole(request.resource.data)
+          && request.resource.data.roles.pupil == true
+          && migrationPupilReconnectionAllowed(schoolId, uid, request.resource.data)
+        );
+
         allow delete: if false;
       }
     }
 
     match /schools/{schoolId} {
-      allow get: if signedIn();
-      allow list: if hasUser() && me().role == 'schoolAdmin';
+      allow get: if true;
+      allow list: if signedIn();
+
       allow create: if signedIn()
-        && schoolId == personalWorkspaceId(request.auth.uid)
-        && request.resource.data.workspaceType == 'individualTeacher'
-        && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.active == true;
+        && request.resource.data.activationCode is string
+        && (
+          (
+            schoolId == 'personal-' + request.auth.uid
+            && request.resource.data.workspaceType == 'individualTeacher'
+            && request.resource.data.ownerId == request.auth.uid
+            && activationConsumedFor(request.resource.data.activationCode, request.auth.uid, schoolId, 'independentTeacher')
+          )
+          || (
+            request.resource.data.workspaceType == 'school'
+            && request.resource.data.creatorId == request.auth.uid
+            && activationConsumedFor(request.resource.data.activationCode, request.auth.uid, schoolId, 'school')
+          )
+        );
+
       allow update: if isSchoolAdmin(schoolId);
       allow delete: if false;
 
       match /departments/{departmentId} {
         allow read: if canReadSchool(schoolId);
-        allow write: if isSchoolAdmin(schoolId) || isDepartmentHead(schoolId);
+        allow create: if workspaceWritable(schoolId)
+          && (isSchoolAdmin(schoolId) || isIndividualWorkspaceOwner(schoolId));
+        allow update: if workspaceWritable(schoolId)
+          && (
+            isSchoolAdmin(schoolId)
+            || isIndividualWorkspaceOwner(schoolId)
+            || (
+              signedIn()
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['headIds', 'updatedAt'])
+              && request.resource.data.headIds is list
+              && request.resource.data.headIds.hasAll(resource.data.headIds)
+              && request.resource.data.headIds.hasAny([request.auth.uid])
+              && hasWorkspaceMembership(schoolId)
+              && isDepartmentHead(schoolId)
+              && headDepartmentsFor(schoolId).hasAny([departmentId])
+            )
+          );
+        allow delete: if false;
       }
 
       match /subjects/{subjectId} {
         allow read: if canReadSchool(schoolId);
-        allow write: if isSchoolAdmin(schoolId) || isDepartmentHead(schoolId);
+        allow create: if workspaceWritable(schoolId)
+          && (
+            isSchoolAdmin(schoolId)
+            || isIndividualWorkspaceOwner(schoolId)
+            || leadsDepartment(schoolId, request.resource.data.departmentId)
+          );
+        allow update: if workspaceWritable(schoolId)
+          && (
+            isSchoolAdmin(schoolId)
+            || isIndividualWorkspaceOwner(schoolId)
+            || leadsDepartment(schoolId, resource.data.departmentId)
+          );
+        allow delete: if false;
       }
 
       match /classes/{classId} {
         allow read: if canReadSchool(schoolId);
-        allow create: if isStaff(schoolId);
-        allow update: if isStaff(schoolId);
-
-        // Classes are retained and archived rather than permanently deleted.
-        // This prevents a departing or disgruntled member of staff from
-        // removing the class record that links its pupils and history.
+        allow create: if workspaceWritable(schoolId)
+          && (
+            isSchoolAdmin(schoolId)
+            || isIndividualWorkspaceOwner(schoolId)
+            || leadsDepartment(schoolId, request.resource.data.departmentId)
+            || (
+              isTeacher(schoolId)
+              && request.resource.data.teacherIds is list
+              && request.resource.data.teacherIds.hasAny([request.auth.uid])
+              && hasWorkspaceMembership(schoolId)
+              && workspaceMembership(schoolId).departmentIds is list
+              && workspaceMembership(schoolId).departmentIds.hasAny([request.resource.data.departmentId])
+            )
+            || migrationWriteAllowed(schoolId, request.resource.data)
+          );
+        allow update: if workspaceWritable(schoolId)
+          && (
+            isSchoolAdmin(schoolId)
+            || isIndividualWorkspaceOwner(schoolId)
+            || leadsDepartment(schoolId, resource.data.departmentId)
+            || teachesClass(schoolId, classId)
+            || migrationWriteAllowed(schoolId, request.resource.data)
+          );
         allow delete: if false;
       }
 
       match /memberships/{membershipId} {
-        allow read: if isStaff(schoolId)
-          || (signedIn() && resource.data.userId == request.auth.uid);
-
-        allow create: if isStaff(schoolId)
-          || (
-            signedIn()
-            && request.resource.data.userId == request.auth.uid
-            && joiningProfileMatchesInvite(schoolId, request.resource.data.inviteCode)
-            && inviteCoversClass(
-              schoolId,
-              request.resource.data.inviteCode,
-              request.resource.data.classId,
-              request.resource.data.subjectId
+        allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
+        allow create: if workspaceWritable(schoolId)
+          && (
+            isStaff(schoolId)
+            || (
+              signedIn()
+              && request.resource.data.userId == request.auth.uid
+              && request.resource.data.inviteCode is string
+              && validInvite(schoolId, request.resource.data.inviteCode)
+              && inviteData(schoolId, request.resource.data.inviteCode).role == 'pupil'
+              && inviteData(schoolId, request.resource.data.inviteCode).classIds.hasAny([request.resource.data.classId])
             )
-          )
-          || (
-            signedIn()
-            && request.resource.data.userId == request.auth.uid
-            && approvedTransfer(
-              request.resource.data.approvedTransferId,
-              request.auth.uid,
-              schoolId
+            || (
+              signedIn()
+              && request.resource.data.userId == request.auth.uid
+              && approvedTransfer(request.resource.data.approvedTransferId, request.auth.uid, schoolId)
             )
+            || migrationWriteAllowed(schoolId, request.resource.data)
           );
-
-        allow update: if isStaff(schoolId);
-
-        // Pupil memberships are deactivated rather than deleted so the
-        // historical link between the pupil, class and feedback is preserved.
+        allow update: if workspaceWritable(schoolId)
+          && (isStaff(schoolId) || migrationWriteAllowed(schoolId, request.resource.data));
         allow delete: if false;
       }
 
       match /assessments/{assessmentId} {
         allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
-
-        allow create: if isStaff(schoolId)
-          || (isCurrentSchool(schoolId)
-            && me().role == 'pupil'
-            && request.resource.data.pupilId == request.auth.uid
-            && request.resource.data.entrySource == 'pupil'
-            && request.resource.data.verificationStatus == 'selfEntered');
-
-        allow update: if isStaff(schoolId)
-          || (ownsPupilRecord(resource.data)
-            && resource.data.entrySource == 'pupil'
-            && request.resource.data.pupilId == request.auth.uid
-            && request.resource.data.classId == resource.data.classId
-            && request.resource.data.subjectId == resource.data.subjectId
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'name', 'topic', 'date', 'score', 'maxScore', 'percentage', 'grade',
-              'entrySource', 'verificationStatus', 'feedbackRecordId', 'updatedAt'
-            ]));
-
-        // Assessment history is retained. Corrections are made by update;
-        // permanent erasure must use a separate controlled administrator process.
+        allow create: if workspaceWritable(schoolId)
+          && (
+            isStaff(schoolId)
+            || (
+              ownsPupilRecord(request.resource.data)
+              && request.resource.data.entrySource == 'pupil'
+              && request.resource.data.verificationStatus == 'selfEntered'
+            )
+            || migrationWriteAllowed(schoolId, request.resource.data)
+          );
+        allow update: if workspaceWritable(schoolId)
+          && (
+            isStaff(schoolId)
+            || (
+              ownsPupilRecord(resource.data)
+              && request.resource.data.pupilId == resource.data.pupilId
+              && resource.data.entrySource == 'pupil'
+              && resource.data.verificationStatus in ['selfEntered', 'pending']
+            )
+            || migrationWriteAllowed(schoolId, request.resource.data)
+          );
         allow delete: if false;
       }
 
       match /feedbackRecords/{feedbackId} {
         allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
-
-        allow create: if isStaff(schoolId)
-          || (isCurrentSchool(schoolId)
-            && me().role == 'pupil'
-            && request.resource.data.pupilId == request.auth.uid
-            && request.resource.data.entrySource == 'pupil'
-            && request.resource.data.verificationStatus == 'selfEntered'
-            && request.resource.data.status in ['draft', 'open']);
-
-        allow update: if isStaff(schoolId)
-          || (ownsPupilRecord(resource.data)
-            && resource.data.entrySource == 'pupil'
-            && request.resource.data.pupilId == request.auth.uid
-            && request.resource.data.classId == resource.data.classId
-            && request.resource.data.subjectId == resource.data.subjectId
-            && request.resource.data.status in ['draft', 'open', 'awaitingReview']
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'teacherId', 'feedbackType', 'assessmentName', 'assessmentComponent',
-              'date', 'skill', 'score', 'maxScore', 'percentage', 'grade',
-              'strength', 'strengthHtml', 'nextStep', 'nextStepHtml',
-              'trafficLight', 'pupilNote', 'entrySource', 'verificationStatus',
-              'status', 'submissionStatus', 'autosavedAt', 'submittedAt',
-              'assessmentId', 'updatedAt'
-            ]))
-          || (ownsPupilRecord(resource.data)
-            && request.resource.data.pupilId == request.auth.uid
-            && request.resource.data.classId == resource.data.classId
-            && request.resource.data.subjectId == resource.data.subjectId
-            && request.resource.data.status in ['open', 'awaitingReview']
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'status', 'updatedAt'
-            ]));
-
-        // Feedback records are never hard-deleted by browser clients.
+        allow create: if workspaceWritable(schoolId)
+          && (
+            isStaff(schoolId)
+            || (
+              ownsPupilRecord(request.resource.data)
+              && request.resource.data.entrySource == 'pupil'
+              && request.resource.data.status in ['draft', 'open']
+            )
+            || migrationWriteAllowed(schoolId, request.resource.data)
+          );
+        allow update: if workspaceWritable(schoolId)
+          && (
+            isStaff(schoolId)
+            || (
+              ownsPupilRecord(resource.data)
+              && request.resource.data.pupilId == resource.data.pupilId
+              && request.resource.data.entrySource == 'pupil'
+              && (
+                resource.data.status == 'draft'
+                || request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                  'strength', 'strengthHtml', 'nextStep', 'nextStepHtml',
+                  'trafficLight', 'pupilNote', 'pupilEditedAt', 'pupilEditCount',
+                  'needsTeacherReview', 'updatedAt'
+                ])
+              )
+            )
+            || migrationWriteAllowed(schoolId, request.resource.data)
+          );
         allow delete: if false;
       }
 
       match /feedbackActions/{actionId} {
         allow read: if isStaff(schoolId) || ownsPupilRecord(resource.data);
-        allow create: if isStaff(schoolId)
-          || (signedIn()
-            && request.resource.data.pupilId == request.auth.uid
-            && request.resource.data.status == 'submitted');
-        allow update: if isStaff(schoolId)
-          || (ownsPupilRecord(resource.data)
-            && request.resource.data.pupilId == request.auth.uid
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'reflection', 'actionTaken', 'confidenceBefore', 'confidenceAfter',
-              'status', 'submittedAt', 'updatedAt'
-            ]));
-        // Reflections and completed actions remain part of the audit trail.
+        allow create: if workspaceWritable(schoolId)
+          && (
+            isStaff(schoolId)
+            || (ownsPupilRecord(request.resource.data) && request.resource.data.status == 'submitted')
+            || migrationWriteAllowed(schoolId, request.resource.data)
+          );
+        allow update: if workspaceWritable(schoolId)
+          && (
+            isStaff(schoolId)
+            || (
+              ownsPupilRecord(resource.data)
+              && request.resource.data.pupilId == resource.data.pupilId
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'reflection', 'actionTaken', 'confidenceBefore', 'confidenceAfter',
+                'status', 'submittedAt', 'updatedAt'
+              ])
+            )
+            || migrationWriteAllowed(schoolId, request.resource.data)
+          );
         allow delete: if false;
       }
 
       match /interventions/{interventionId} {
-        allow read, create, update: if isStaff(schoolId);
+        allow read: if isStaff(schoolId);
+        allow create, update: if workspaceWritable(schoolId)
+          && (isStaff(schoolId) || migrationWriteAllowed(schoolId, request.resource.data));
         allow delete: if false;
       }
 
       match /invites/{inviteCode} {
-        // A long random code can be checked directly during registration.
-        // Creators can list only their own codes; the school administrator can
-        // see all codes in the school.
         allow get: if true;
         allow list: if isSchoolAdmin(schoolId)
-          || (hasUser() && resource.data.createdBy == request.auth.uid);
-
-        // School administrators create department-head codes.
-        // Department heads create teacher codes for departments they lead.
-        // Teachers create pupil codes only for classes they teach.
-        allow create: if (
-          isSchoolAdmin(schoolId)
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.role == 'departmentHead'
-          && request.resource.data.scopeType == 'department'
-          && request.resource.data.departmentIds is list
-          && request.resource.data.departmentIds.size() == 1
-          && exists(/databases/$(database)/documents/schools/$(schoolId)/departments/$(request.resource.data.departmentIds[0]))
-          && request.resource.data.classIds is list
-          && request.resource.data.classIds.size() == 0
-        ) || (
-          isDepartmentHead(schoolId)
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.role == 'teacher'
-          && request.resource.data.scopeType == 'department'
-          && request.resource.data.departmentIds is list
-          && request.resource.data.departmentIds.size() == 1
-          && me().departmentIds.hasAny(request.resource.data.departmentIds)
-          && exists(/databases/$(database)/documents/schools/$(schoolId)/departments/$(request.resource.data.departmentIds[0]))
-          && request.resource.data.classIds is list
-          && request.resource.data.classIds.size() == 0
-        ) || (
-          isIndividualWorkspaceOwner(schoolId)
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.role == 'teacher'
-          && request.resource.data.scopeType == 'classTeacher'
-          && request.resource.data.departmentIds is list
-          && request.resource.data.departmentIds.size() == 1
-          && request.resource.data.classIds is list
-          && request.resource.data.classIds.size() == 1
-          && exists(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0]))
-          && request.resource.data.departmentIds[0] == get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0])).data.departmentId
-          && request.resource.data.subjectId == get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0])).data.subjectId
-        ) || (
-          isTeacher(schoolId)
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.role == 'pupil'
-          && request.resource.data.scopeType == 'class'
-          && request.resource.data.classIds is list
-          && request.resource.data.classIds.size() == 1
-          && teachesClass(schoolId, request.resource.data.classIds[0])
-          && request.resource.data.departmentIds is list
-          && request.resource.data.departmentIds.size() == 1
-          && request.resource.data.departmentIds[0] == get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0])).data.departmentId
-          && request.resource.data.subjectId == get(/databases/$(database)/documents/schools/$(schoolId)/classes/$(request.resource.data.classIds[0])).data.subjectId
-        );
-
-        allow update: if isSchoolAdmin(schoolId)
-          || (isStaff(schoolId)
-            && resource.data.createdBy == request.auth.uid
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'active', 'label', 'updatedAt'
-            ]));
-        allow delete: if isSchoolAdmin(schoolId)
           || (isStaff(schoolId) && resource.data.createdBy == request.auth.uid);
+
+        allow create: if workspaceWritable(schoolId)
+          && request.resource.data.createdBy == request.auth.uid
+          && (
+            (
+              isSchoolAdmin(schoolId)
+              && request.resource.data.role == 'staff'
+              && request.resource.data.scopeType == 'internalStaff'
+              && request.resource.data.roles is map
+              && request.resource.data.roles.pupil == false
+              && (request.resource.data.roles.schoolAdmin || request.resource.data.roles.departmentHead || request.resource.data.roles.teacher)
+              && (!request.resource.data.roles.departmentHead || request.resource.data.roles.teacher)
+            )
+            || (
+              isDepartmentHead(schoolId)
+              && request.resource.data.role == 'teacher'
+              && request.resource.data.scopeType == 'department'
+              && request.resource.data.departmentIds is list
+              && request.resource.data.departmentIds.size() == 1
+              && headDepartmentsFor(schoolId).hasAny(request.resource.data.departmentIds)
+            )
+            || (
+              isIndividualWorkspaceOwner(schoolId)
+              && request.resource.data.role == 'teacher'
+              && request.resource.data.scopeType == 'classTeacher'
+              && request.resource.data.classIds is list
+              && request.resource.data.classIds.size() == 1
+              && teachesClass(schoolId, request.resource.data.classIds[0])
+            )
+            || (
+              isTeacher(schoolId)
+              && request.resource.data.role == 'pupil'
+              && request.resource.data.scopeType == 'class'
+              && request.resource.data.classIds is list
+              && request.resource.data.classIds.size() == 1
+              && teachesClass(schoolId, request.resource.data.classIds[0])
+            )
+          );
+
+        allow update: if workspaceWritable(schoolId)
+          && (
+            isSchoolAdmin(schoolId)
+            || (
+              isStaff(schoolId)
+              && resource.data.createdBy == request.auth.uid
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                'active', 'label', 'updatedAt'
+              ])
+            )
+          );
+        allow delete: if false;
       }
 
       match /auditLogs/{logId} {
@@ -481,23 +794,20 @@ service cloud.firestore {
     match /classMigrationRequests/{migrationId} {
       allow create: if signedIn()
         && request.resource.data.createdBy == request.auth.uid
-        && request.resource.data.sourceWorkspaceId is string
-        && request.resource.data.destinationSchoolId is string
         && request.resource.data.status == 'requested'
         && isIndividualWorkspaceOwner(request.resource.data.sourceWorkspaceId)
-        && hasWorkspaceMembership(request.resource.data.destinationSchoolId)
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(request.resource.data.destinationSchoolId))
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)/workspaces/$(request.resource.data.destinationSchoolId)).data.role == 'teacher'
+        && isTeacher(request.resource.data.destinationSchoolId)
         && exists(/databases/$(database)/documents/schools/$(request.resource.data.sourceWorkspaceId)/classes/$(request.resource.data.sourceClassId))
         && exists(/databases/$(database)/documents/schools/$(request.resource.data.destinationSchoolId)/departments/$(request.resource.data.destinationDepartmentId))
         && exists(/databases/$(database)/documents/schools/$(request.resource.data.destinationSchoolId)/subjects/$(request.resource.data.destinationSubjectId));
 
-      allow read: if signedIn() && (
-        resource.data.createdBy == request.auth.uid
-        || isIndividualWorkspaceOwner(resource.data.sourceWorkspaceId)
-        || isSchoolAdmin(resource.data.destinationSchoolId)
-        || isDepartmentHead(resource.data.destinationSchoolId)
-      );
+      allow read: if signedIn()
+        && (
+          resource.data.createdBy == request.auth.uid
+          || isIndividualWorkspaceOwner(resource.data.sourceWorkspaceId)
+          || isSchoolAdmin(resource.data.destinationSchoolId)
+          || leadsDepartment(resource.data.destinationSchoolId, resource.data.destinationDepartmentId)
+        );
 
       allow update: if (
         resource.data.status == 'requested'
@@ -512,12 +822,13 @@ service cloud.firestore {
       ) || (
         signedIn()
         && resource.data.createdBy == request.auth.uid
-        && isCurrentSchool(resource.data.destinationSchoolId)
-        && resource.data.status == 'accepted'
-        && request.resource.data.status == 'completed'
+        && isTeacher(resource.data.destinationSchoolId)
+        && resource.data.status in ['accepted', 'migrating']
+        && request.resource.data.status in ['migrating', 'completed']
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status', 'destinationClassId', 'copiedMembershipCount',
-          'copiedAssessmentCount', 'copiedFeedbackCount',
+          'status', 'migrationPhase', 'destinationClassId', 'startedAt',
+          'copiedMembershipCount', 'copiedAssessmentCount', 'copiedFeedbackCount',
+          'copiedActionCount', 'copiedInterventionCount', 'reconnectedPupilCount',
           'completedAt', 'updatedAt'
         ])
       );
@@ -528,13 +839,11 @@ service cloud.firestore {
     match /emailChangeRequests/{requestId} {
       allow create: if signedIn()
         && request.resource.data.pupilId == request.auth.uid
-        && request.resource.data.schoolId == me().schoolId
-        && me().role == 'pupil'
+        && isPupil(request.resource.data.schoolId)
         && request.resource.data.status == 'requested';
 
       allow read: if signedIn()
-        && (resource.data.pupilId == request.auth.uid
-          || isSchoolAdmin(resource.data.schoolId));
+        && (resource.data.pupilId == request.auth.uid || isSchoolAdmin(resource.data.schoolId));
 
       allow update: if isSchoolAdmin(resource.data.schoolId)
         || (
@@ -546,24 +855,23 @@ service cloud.firestore {
             'status', 'completedAt'
           ])
         );
-
       allow delete: if false;
     }
 
     match /transferRequests/{requestId} {
       allow create: if signedIn()
-        && me().role == 'pupil'
         && request.resource.data.pupilId == request.auth.uid
-        && request.resource.data.fromSchoolId == me().schoolId
+        && isPupil(request.resource.data.fromSchoolId)
         && request.resource.data.status == 'requested'
         && exists(/databases/$(database)/documents/schools/$(request.resource.data.toSchoolId))
-        && get(/databases/$(database)/documents/schools/$(request.resource.data.toSchoolId)).data.transferCode
-          == request.resource.data.destinationCode;
+        && get(/databases/$(database)/documents/schools/$(request.resource.data.toSchoolId)).data.transferCode == request.resource.data.destinationCode;
 
       allow read: if signedIn()
-        && (resource.data.pupilId == request.auth.uid
+        && (
+          resource.data.pupilId == request.auth.uid
           || isSchoolAdmin(resource.data.fromSchoolId)
-          || isSchoolAdmin(resource.data.toSchoolId));
+          || isSchoolAdmin(resource.data.toSchoolId)
+        );
 
       allow update: if (
         isSchoolAdmin(resource.data.toSchoolId)
@@ -581,7 +889,6 @@ service cloud.firestore {
           'status', 'completedAt'
         ])
       );
-
       allow delete: if false;
     }
   }

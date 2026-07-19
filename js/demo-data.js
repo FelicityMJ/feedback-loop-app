@@ -90,7 +90,8 @@ export const demoData = {
     { id: "northbridge-academy~4ACOMP-26", schoolId: DEMO_SCHOOL_ID, role: "pupil", departmentIds: ["computing-business"], classIds: ["n5-computing-a"], subjectId: "computing-science", active: true, label: "4A Computing pupil class code", scopeType: "class", scopeLabel: "4A Computing", createdBy: "demo-teacher" }
   ],
   transferRequests: [],
-  emailChangeRequests: []
+  emailChangeRequests: [],
+  classMigrationRequests: []
 };
 
 export const demoRoleUsers = {

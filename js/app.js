@@ -9,7 +9,13 @@ import {
   registerWithInviteGoogle,
   registerIndependentTeacher,
   registerIndependentTeacherGoogle,
+  previewPupilClassInvite,
+  joinPupilClass,
   joinTeacherWorkspace,
+  loadWorkspaceStructure,
+  createClassMigrationRequest,
+  decideClassMigrationRequest,
+  completeClassMigration,
   switchWorkspace,
   resetPassword,
   sendPupilPasswordReset,
@@ -574,7 +580,7 @@ function ensureSelectedSubject() {
 
 function pupilPageHead(title, description, extraActions = "") {
   const subjects = ensureSelectedSubject();
-  return `<div class="page-head"><div><h1>${e(title)}</h1><p>${e(description)}</p></div><div class="page-actions">${subjects.length ? `<select class="btn btn-ghost" data-subject-select>${selectOptions(subjects, state.selectedSubjectId)}</select>` : ""}${extraActions}</div></div>`;
+  return `<div class="page-head"><div><h1>${e(title)}</h1><p>${e(description)}</p></div><div class="page-actions">${subjects.length ? `<select class="btn btn-ghost" data-subject-select>${selectOptions(subjects, state.selectedSubjectId)}</select>` : ""}<button class="btn btn-ghost" data-action="join-another-class">+ Join another class</button>${extraActions}</div></div>`;
 }
 
 function renderPupilRoute() {
@@ -721,11 +727,14 @@ function skillCountsForClasses(classes) {
 function renderTeacherClasses() {
   const classes = classesVisibleToProfile();
   const personalWorkspace = currentSchool().workspaceType === "individualTeacher";
+  const linkedSchoolCount = (state.data.workspaces || []).filter((workspace) => workspace.id !== state.profile.schoolId && workspace.workspaceType !== "individualTeacher").length;
+  const migrationRequests = (state.data.classMigrationRequests || []).filter((request) => request.createdBy === state.profile.id);
   return `<div class="page-head"><div><h1>My classes</h1><p>Create classes, check membership and use a pupil invitation code for straightforward enrolment.</p></div><div class="page-actions">${personalWorkspace ? `<button class="btn btn-ghost" data-action="add-department">Add department</button><button class="btn btn-ghost" data-action="add-subject">Add subject</button><button class="btn btn-secondary" data-action="join-school-workspace">Link to a school</button>` : ""}<button class="btn btn-primary" data-action="add-class">Add class</button></div></div>
-    ${personalWorkspace ? `<div class="alert alert-info" style="margin-bottom:18px"><strong>Individual teacher workspace.</strong> You have full classroom access here. When a school adopts FeedbackLoop, use a teacher department code to add that school as another workspace without creating a new account.</div>` : ""}
-    <div class="grid grid-3">${classes.map((cls) => `<section class="card card-pad"><div class="timeline-meta">${badge(cls.targetQualification || "Course")}</div><h3>${e(cls.name)}</h3><p class="muted">${e(getSubjectName(cls.subjectId))} · ${e(cls.academicYear || "")}</p><div class="grid grid-2"><div><strong>${pupilsForClass(cls.id).length}</strong><div class="small muted">Pupils</div></div><div><strong>${classAverage(cls.id)}%</strong><div class="small muted">Average</div></div></div><div class="form-actions"><button class="btn btn-ghost btn-sm" data-action="select-class" data-id="${cls.id}">Open class</button><button class="btn btn-secondary btn-sm" data-action="class-invite" data-id="${cls.id}">Pupil code</button></div></section>`).join("") || `<div class="card empty span-3">No classes yet.</div>`}</div>
+    ${personalWorkspace ? `<div class="alert alert-info" style="margin-bottom:18px"><strong>Individual teacher workspace.</strong> You have full classroom access here. A co-teacher can join a shared class using a co-teacher code. When a school adopts FeedbackLoop, link your account first and then request to move each class with its complete feedback history.</div>` : ""}
+    <div class="grid grid-3">${classes.map((cls) => `<section class="card card-pad"><div class="timeline-meta">${badge(cls.targetQualification || "Course")}</div><h3>${e(cls.name)}</h3><p class="muted">${e(getSubjectName(cls.subjectId))} · ${e(cls.academicYear || "")}</p><p class="small"><strong>Teachers:</strong> ${e((cls.teacherIds || []).map(getUserName).join(", ") || "Not assigned")}</p><div class="grid grid-2"><div><strong>${pupilsForClass(cls.id).length}</strong><div class="small muted">Pupils</div></div><div><strong>${classAverage(cls.id)}%</strong><div class="small muted">Average</div></div></div><div class="form-actions"><button class="btn btn-ghost btn-sm" data-action="select-class" data-id="${cls.id}">Open class</button><button class="btn btn-secondary btn-sm" data-action="class-invite" data-id="${cls.id}">Pupil code</button>${personalWorkspace ? `<button class="btn btn-ghost btn-sm" data-action="assign-teacher" data-id="${cls.id}">Manage teachers</button><button class="btn btn-ghost btn-sm" data-action="co-teacher-code" data-id="${cls.id}">Co-teacher code</button>${linkedSchoolCount ? `<button class="btn btn-primary btn-sm" data-action="move-class-to-school" data-id="${cls.id}">Move to school</button>` : ""}` : ""}</div></section>`).join("") || `<div class="card empty span-3">No classes yet.</div>`}</div>
     ${teacherSelectedClass() ? `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>${e(teacherSelectedClass().name)} pupil list</h3></div></div>${classSnapshotTable(teacherSelectedClass())}</section>` : ""}
-    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Pupil class codes</h3><p>Each code adds pupils only to its named class. Copy an existing code or disable it when enrolment is complete.</p></div></div>${inviteCodeTable((state.data.invites || []).filter((invite) => invite.role === "pupil"))}</section>`;
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Pupil class codes</h3><p>Each code adds pupils only to its named class. Existing pupils use the same code through “Join another class”.</p></div></div>${inviteCodeTable((state.data.invites || []).filter((invite) => invite.role === "pupil"))}</section>
+    ${migrationRequests.length ? `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Class moves</h3><p>Approved moves are completed from the destination school workspace. Original data remains as a historical backup.</p></div></div>${migrationRequestsTable(migrationRequests, "teacher")}</section>` : ""}`;
 }
 
 function renderTeacherFeedback() {
@@ -783,7 +792,8 @@ function riskTable(risks) {
 
 function renderHeadClasses() {
   const classes = headClasses();
-  return `<div class="page-head"><div><h1>Department classes</h1><p>Assign teachers, compare class patterns and plan departmental intervention.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="add-class">Add class</button></div></div><div class="grid grid-3">${classes.map((c) => `<section class="card card-pad"><h3>${e(c.name)}</h3><p class="muted">${e(getSubjectName(c.subjectId))} · ${pupilsForClass(c.id).length} pupils</p><p class="small"><strong>Teachers:</strong> ${e((c.teacherIds || []).map(getUserName).join(", ") || "Not assigned")}</p><div class="progress-row"><span>Average</span><div class="progress-track"><div class="progress-bar" style="width:${classAverage(c.id)}%"></div></div><strong>${classAverage(c.id)}%</strong></div><p>${badge(`${pupilsForClass(c.id).filter(p=>atRiskInfo(p.id,c.id).level!=="Low").length} to review`)}</p><div class="form-actions"><button class="btn btn-ghost btn-sm" data-action="select-class" data-id="${c.id}">Open class</button><button class="btn btn-secondary btn-sm" data-action="assign-teacher" data-id="${c.id}">Assign teacher</button></div></section>`).join("")}</div>${teacherSelectedClass() ? `<section class="card" style="margin-top:18px"><div class="card-head"><h3>${e(teacherSelectedClass().name)}</h3><select class="btn btn-ghost" data-class-select>${selectOptions(classes, teacherSelectedClass().id)}</select></div>${classSnapshotTable(teacherSelectedClass())}</section>` : ""}`;
+  const migrations = (state.data.classMigrationRequests || []).filter((request) => request.destinationSchoolId === state.profile.schoolId && (state.profile.departmentIds || []).includes(request.destinationDepartmentId));
+  return `<div class="page-head"><div><h1>Department classes</h1><p>Assign several teachers to shared classes, compare class patterns and approve classes moving in from individual teacher workspaces.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="add-class">Add class</button></div></div><div class="grid grid-3">${classes.map((c) => `<section class="card card-pad"><h3>${e(c.name)}</h3><p class="muted">${e(getSubjectName(c.subjectId))} · ${pupilsForClass(c.id).length} pupils</p><p class="small"><strong>Teachers:</strong> ${e((c.teacherIds || []).map(getUserName).join(", ") || "Not assigned")}</p><div class="progress-row"><span>Average</span><div class="progress-track"><div class="progress-bar" style="width:${classAverage(c.id)}%"></div></div><strong>${classAverage(c.id)}%</strong></div><p>${badge(`${pupilsForClass(c.id).filter(p=>atRiskInfo(p.id,c.id).level!=="Low").length} to review`)}</p><div class="form-actions"><button class="btn btn-ghost btn-sm" data-action="select-class" data-id="${c.id}">Open class</button><button class="btn btn-secondary btn-sm" data-action="assign-teacher" data-id="${c.id}">Manage teachers</button></div></section>`).join("")}</div>${teacherSelectedClass() ? `<section class="card" style="margin-top:18px"><div class="card-head"><h3>${e(teacherSelectedClass().name)}</h3><select class="btn btn-ghost" data-class-select>${selectOptions(classes, teacherSelectedClass().id)}</select></div>${classSnapshotTable(teacherSelectedClass())}</section>` : ""}${migrations.length ? `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Classes requesting to join this department</h3><p>Approve the destination first. The original teacher then copies the complete class history into the school workspace.</p></div></div>${migrationRequestsTable(migrations, "head")}</section>` : ""}`;
 }
 
 function renderAtRisk() {
@@ -819,7 +829,7 @@ function renderAdminSetup() {
     <div class="alert alert-info" style="margin-bottom:18px"><strong>School transfer code:</strong>&nbsp; <code>${e(currentSchool().transferCode || "Add a transferCode field to the school document")}</code><span class="small"> — give this only to a pupil who is moving into your school.</span></div>
     <div class="grid grid-2"><section class="card"><div class="card-head"><div><h3>Departments</h3></div></div><div class="table-wrap"><table><thead><tr><th>Department</th><th>Head IDs</th></tr></thead><tbody>${state.data.departments.map((d)=>{const heads=state.data.users.filter((u)=>u.role==="departmentHead"&&(u.departmentIds||[]).includes(d.id));return `<tr><td>${e(d.name)}</td><td>${e(heads.map((u)=>u.displayName).join(", ")||"Not assigned")}</td></tr>`}).join("")||`<tr><td colspan="2" class="empty">No departments.</td></tr>`}</tbody></table></div></section>
     <section class="card"><div class="card-head"><div><h3>Subjects</h3></div></div><div class="table-wrap"><table><thead><tr><th>Subject</th><th>Department</th><th>Scale</th></tr></thead><tbody>${state.data.subjects.map((s)=>`<tr><td>${e(s.name)}</td><td>${e(byId(state.data.departments,s.departmentId)?.name||"")}</td><td>${e(s.gradeScale||"A-D")}</td></tr>`).join("")||`<tr><td colspan="3" class="empty">No subjects.</td></tr>`}</tbody></table></div></section></div>
-    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Classes</h3></div></div><div class="table-wrap"><table><thead><tr><th>Class</th><th>Subject</th><th>Teachers</th><th>Pupils</th><th>Year</th></tr></thead><tbody>${state.data.classes.map((c)=>`<tr><td>${e(c.name)}</td><td>${e(getSubjectName(c.subjectId))}</td><td>${e((c.teacherIds||[]).map(getUserName).join(", ")||"Not assigned")}</td><td>${pupilsForClass(c.id).length}</td><td>${e(c.academicYear||"")}</td></tr>`).join("")}</tbody></table></div></section>
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Classes</h3></div></div><div class="table-wrap"><table><thead><tr><th>Class</th><th>Subject</th><th>Teachers</th><th>Pupils</th><th>Year</th><th></th></tr></thead><tbody>${state.data.classes.map((c)=>`<tr><td>${e(c.name)}</td><td>${e(getSubjectName(c.subjectId))}</td><td>${e((c.teacherIds||[]).map(getUserName).join(", ")||"Not assigned")}</td><td>${pupilsForClass(c.id).length}</td><td>${e(c.academicYear||"")}</td><td><button class="btn btn-ghost btn-sm" data-action="assign-teacher" data-id="${c.id}">Manage teachers</button></td></tr>`).join("")}</tbody></table></div></section>
     <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Invitation code register</h3><p>The school administrator creates department-head codes. Department heads create teacher codes, and teachers create pupil class codes.</p></div><button class="btn btn-primary btn-sm" data-action="create-invite">Create department-head code</button></div>${inviteCodeTable(state.data.invites || [])}</section>`;
 }
 
@@ -833,7 +843,8 @@ function renderAdminRequests() {
   const transfers = sortByDateDesc(state.data.transferRequests || [], "requestedAt");
   return `<div class="page-head"><div><h1>Transfers and email changes</h1><p>Approve identity changes before school accounts close, and control what moves to or from another school.</p></div></div>
     <section class="card"><div class="card-head"><div><h3>Email change requests</h3><p>The pupil must verify the approved new address before Firebase changes the login.</p></div></div><div class="table-wrap"><table><thead><tr><th>Pupil</th><th>Old email</th><th>Requested email</th><th>Status</th><th></th></tr></thead><tbody>${emailRequests.map((r)=>`<tr><td>${e(getUserName(r.pupilId))}</td><td>${e(r.oldEmail)}</td><td>${e(r.newEmail)}</td><td>${badge(r.status)}</td><td>${r.status==="requested"?`<button class="btn btn-primary btn-sm" data-action="approve-email" data-id="${r.id}">Approve</button> <button class="btn btn-danger btn-sm" data-action="decline-email" data-id="${r.id}">Decline</button>`:""}</td></tr>`).join("")||`<tr><td colspan="5" class="empty">No email change requests.</td></tr>`}</tbody></table></div></section>
-    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>School transfer requests</h3><p>Destination schools accept incoming pupils. The pupil completes the final move.</p></div></div><div class="table-wrap"><table><thead><tr><th>Pupil</th><th>From</th><th>To</th><th>Sharing</th><th>Status</th><th></th></tr></thead><tbody>${transfers.map((r)=>`<tr><td>${e(r.pupilName||getUserName(r.pupilId))}<div class="small muted">${e(r.sharedSummary || "")}</div></td><td>${e(r.fromSchoolId)}</td><td>${e(r.toSchoolId)}</td><td>${e(r.shareLevel)}</td><td>${badge(r.status)}</td><td>${r.toSchoolId===state.profile.schoolId&&r.status==="requested"?`<button class="btn btn-primary btn-sm" data-action="accept-transfer" data-id="${r.id}">Accept</button> <button class="btn btn-danger btn-sm" data-action="decline-transfer" data-id="${r.id}">Decline</button>`:""}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">No transfer requests.</td></tr>`}</tbody></table></div></section>`;
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>School transfer requests</h3><p>Destination schools accept incoming pupils. The pupil completes the final move.</p></div></div><div class="table-wrap"><table><thead><tr><th>Pupil</th><th>From</th><th>To</th><th>Sharing</th><th>Status</th><th></th></tr></thead><tbody>${transfers.map((r)=>`<tr><td>${e(r.pupilName||getUserName(r.pupilId))}<div class="small muted">${e(r.sharedSummary || "")}</div></td><td>${e(r.fromSchoolId)}</td><td>${e(r.toSchoolId)}</td><td>${e(r.shareLevel)}</td><td>${badge(r.status)}</td><td>${r.toSchoolId===state.profile.schoolId&&r.status==="requested"?`<button class="btn btn-primary btn-sm" data-action="accept-transfer" data-id="${r.id}">Accept</button> <button class="btn btn-danger btn-sm" data-action="decline-transfer" data-id="${r.id}">Decline</button>`:""}</td></tr>`).join("")||`<tr><td colspan="6" class="empty">No transfer requests.</td></tr>`}</tbody></table></div></section>
+    <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Individual classes joining the school</h3><p>Approval allows the original teacher to copy the class, results and feedback into this school workspace.</p></div></div>${migrationRequestsTable((state.data.classMigrationRequests || []).filter((request) => request.destinationSchoolId === state.profile.schoolId), "admin")}</section>`;
 }
 
 function renderModal() {
@@ -859,8 +870,64 @@ function modalAddSubject() {
   openModal("Add subject", `<form data-form="add-subject" class="form-grid"><div class="field"><label>Subject name</label><input name="name" required></div><div class="field"><label>Department</label><select name="departmentId" required>${selectOptions(state.data.departments, "")}</select></div><div class="field"><label>Grade scale</label><select name="gradeScale"><option>A1–D8</option><option>Percentage</option><option>Pass/Fail</option></select></div><div class="form-actions full"><button class="btn btn-primary">Add subject</button></div></form>`);
 }
 
+function modalJoinAnotherClass() {
+  openModal("Join another class", `<form data-form="preview-class-join"><div class="field"><label>Class code</label><input name="inviteCode" placeholder="workspace-id~CODE" required><span class="field-help">Use the code supplied by the teacher for the additional class. Keep using this same pupil account.</span></div><div class="form-actions"><button class="btn btn-primary">Check class</button></div></form>`);
+}
+
+async function modalConfirmClassJoin(inviteCode) {
+  const preview = await previewPupilClassInvite(inviteCode);
+  openModal("Confirm class", `<div class="alert alert-info"><strong>${e(preview.className)}</strong><p>${e(preview.subjectName)} · ${e(preview.workspaceName)}</p></div><p>This class will be added to your existing learner profile. Your current classes and feedback will remain available.</p><form data-form="join-pupil-class"><input type="hidden" name="inviteCode" value="${e(preview.inviteCode)}"><div class="form-actions"><button class="btn btn-primary">Join class</button><button class="btn btn-ghost" type="button" data-action="close-modal">Cancel</button></div></form>`);
+}
+
+function migrationStatusBadge(request) {
+  const label = request.status === "completed" ? "Moved" : request.status === "accepted" ? "Approved" : request.status === "declined" ? "Declined" : "Awaiting approval";
+  return badge(label);
+}
+
+function migrationRequestsTable(requests, context = "teacher") {
+  return `<div class="table-wrap"><table><thead><tr><th>Class</th><th>From</th><th>Destination</th><th>Status</th><th></th></tr></thead><tbody>${requests.map((request) => {
+    let actions = "";
+    if ((context === "admin" || context === "head") && request.destinationSchoolId === state.profile.schoolId && request.status === "requested") {
+      actions = `<button class="btn btn-primary btn-sm" data-action="approve-class-migration" data-id="${e(request.id)}">Approve</button> <button class="btn btn-danger btn-sm" data-action="decline-class-migration" data-id="${e(request.id)}">Decline</button>`;
+    } else if (context === "teacher" && request.createdBy === state.profile.id && request.destinationSchoolId === state.profile.schoolId && request.status === "accepted") {
+      actions = `<button class="btn btn-primary btn-sm" data-action="complete-class-migration" data-id="${e(request.id)}">Copy class and history</button>`;
+    } else if (request.status === "completed" && request.destinationClassId) {
+      actions = `<span class="small muted">New class ready</span>`;
+    }
+    return `<tr><td><strong>${e(request.sourceClassName || "Class")}</strong><div class="small muted">Requested by ${e(request.createdByName || "teacher")}</div></td><td>${e(request.sourceWorkspaceName || request.sourceWorkspaceId || "")}</td><td>${e(request.destinationSchoolName || request.destinationSchoolId || "")}</td><td>${migrationStatusBadge(request)}</td><td>${actions}</td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty">No class moves.</td></tr>`}</tbody></table></div>`;
+}
+
+async function modalMoveClassToSchool(classId) {
+  const cls = byId(state.data.classes, classId);
+  if (!cls) return toast("Class not found.", "error");
+  const destinations = (state.data.workspaces || []).filter((workspace) => workspace.id !== state.profile.schoolId && workspace.workspaceType !== "individualTeacher");
+  if (!destinations.length) return toast("Join the school using its teacher department code first.", "error");
+  const structures = [];
+  for (const workspace of destinations) {
+    try {
+      const structure = await loadWorkspaceStructure(state.profile, workspace.id);
+      const departmentIds = structure.membership.departmentIds || [];
+      const departments = structure.departments.filter((department) => !departmentIds.length || departmentIds.includes(department.id));
+      const subjects = structure.subjects.filter((subject) => departments.some((department) => department.id === subject.departmentId));
+      if (departments.length && subjects.length) structures.push({ workspace, ...structure, departments, subjects });
+    } catch (error) {
+      console.warn("Could not load destination workspace", workspace.id, error);
+    }
+  }
+  if (!structures.length) return toast("The linked school has no available department and subject for this teacher yet.", "error");
+  const first = structures[0];
+  const structureJson = e(JSON.stringify(structures.map((item) => ({
+    schoolId: item.workspace.id,
+    schoolName: item.workspace.name,
+    departments: item.departments.map((department) => ({ id: department.id, name: department.name })),
+    subjects: item.subjects.map((subject) => ({ id: subject.id, name: subject.name, departmentId: subject.departmentId }))
+  }))));
+  openModal("Move class into a school workspace", `<div class="alert alert-info"><strong>No feedback will be lost.</strong><p>FeedbackLoop copies the class, memberships, results, feedback and actions into the school workspace. The original individual copy remains available as a historical backup.</p></div><form data-form="request-class-migration" class="form-grid" data-migration-structures="${structureJson}"><input type="hidden" name="sourceClassId" value="${e(cls.id)}"><div class="field full"><label>Class</label><input value="${e(cls.name)}" disabled></div><div class="field"><label>School workspace</label><select name="destinationSchoolId" data-migration-school required>${structures.map((item) => `<option value="${e(item.workspace.id)}">${e(item.workspace.name)}</option>`).join("")}</select></div><div class="field"><label>Department</label><select name="destinationDepartmentId" data-migration-department required>${first.departments.map((department) => `<option value="${e(department.id)}">${e(department.name)}</option>`).join("")}</select></div><div class="field full"><label>Subject</label><select name="destinationSubjectId" data-migration-subject required>${first.subjects.filter((subject) => subject.departmentId === first.departments[0].id).map((subject) => `<option value="${e(subject.id)}">${e(subject.name)}</option>`).join("")}</select></div><div class="form-actions full"><button class="btn btn-primary">Request class move</button></div></form>`);
+}
+
 function modalJoinSchoolWorkspace() {
-  openModal("Link this account to a school", `<form data-form="join-school-workspace"><div class="field"><label>Teacher department code</label><input name="inviteCode" placeholder="school-id~CODE" required><span class="field-help">Your department head supplies this code. Your individual workspace remains available and you will be able to switch between both.</span></div><div class="form-actions"><button class="btn btn-primary">Join department</button></div></form>`);
+  openModal("Add another teacher workspace", `<form data-form="join-school-workspace"><div class="field"><label>Teacher department or co-teacher code</label><input name="inviteCode" placeholder="workspace-id~CODE" required><span class="field-help">Use a department code to join a school, or a co-teacher code to share an individual class. Your existing workspace and account remain available.</span></div><div class="form-actions"><button class="btn btn-primary">Add workspace</button></div></form>`);
 }
 
 function modalAddClass() {
@@ -880,9 +947,17 @@ function inviteCodeTable(invites) {
 function modalAssignTeacher(classId) {
   const cls = byId(state.data.classes, classId);
   if (!cls) return toast("Class not found.", "error");
-  const teachers = state.data.users.filter((user) => user.role === "teacher" && (user.departmentIds || []).includes(cls.departmentId));
-  if (!teachers.length) return toast("No teacher has joined this department yet.", "error");
-  openModal("Assign teacher to class", `<form data-form="assign-teacher" class="form-grid"><input type="hidden" name="classId" value="${e(cls.id)}"><div class="field full"><label>Class</label><input value="${e(cls.name)}" disabled></div><div class="field full"><label>Teacher</label><select name="teacherId" required>${selectOptions(teachers, "", "displayName")}</select><span class="field-help">The teacher must first join using the department code.</span></div><div class="form-actions full"><button class="btn btn-primary">Assign teacher</button></div></form>`);
+  const personalWorkspace = currentSchool().workspaceType === "individualTeacher";
+  const teachers = state.data.users.filter((user) => ["teacher", "departmentHead"].includes(user.role) && (personalWorkspace || (user.departmentIds || []).includes(cls.departmentId)));
+  if (!teachers.length) return toast("No teacher has joined this workspace or department yet.", "error");
+  const options = teachers.map((teacher) => `<label class="check-card"><input type="checkbox" name="teacherIds" value="${e(teacher.id)}" ${(cls.teacherIds || []).includes(teacher.id) ? "checked" : ""}><span><strong>${e(teacher.displayName)}</strong><small>${e(teacher.email || "")}</small></span></label>`).join("");
+  openModal("Manage class teachers", `<form data-form="assign-teacher" class="form-grid"><input type="hidden" name="classId" value="${e(cls.id)}"><div class="field full"><label>Class</label><input value="${e(cls.name)}" disabled></div><div class="field full"><label>Teachers sharing this class</label><div class="check-card-list">${options}</div><span class="field-help">Select every teacher who should see and manage this class. You can add or remove teachers later.</span></div><div class="form-actions full"><button class="btn btn-primary">Save teachers</button></div></form>`);
+}
+
+function modalCreateCoTeacherInvite(classId) {
+  const cls = byId(classesVisibleToProfile(), classId);
+  if (!cls || currentSchool().workspaceType !== "individualTeacher" || currentSchool().ownerId !== state.profile.id) return toast("Only the individual workspace owner can create a co-teacher code.", "error");
+  openModal("Create co-teacher code", `<div class="alert alert-info">This code lets another teacher add this individual workspace to their existing account and automatically assigns them to <strong>${e(cls.name)}</strong>.</div><form data-form="create-invite" class="form-grid"><input type="hidden" name="scope" value="classTeacher"><input type="hidden" name="classId" value="${e(cls.id)}"><div class="field full"><label>Label</label><input name="label" required value="${e(cls.name)} co-teacher code"></div><div class="form-actions full"><button class="btn btn-primary">Generate reusable co-teacher code</button></div></form>`);
 }
 
 function modalCreateInvite(prefill = {}) {
@@ -1454,7 +1529,18 @@ app.addEventListener("click", async (event) => {
     if (email) await withBusy(actionEl, async()=>{await resetPassword(email);toast("Password reset email sent.");});
     return;
   }
+  if (action === "join-another-class") return modalJoinAnotherClass();
   if (action === "join-school-workspace") return modalJoinSchoolWorkspace();
+  if (action === "move-class-to-school") { await withBusy(actionEl, async()=>{ await modalMoveClassToSchool(id); }); return; }
+  if (action === "co-teacher-code") return modalCreateCoTeacherInvite(id);
+  if (action === "approve-class-migration" || action === "decline-class-migration") {
+    await withBusy(actionEl, async()=>{await decideClassMigrationRequest(id, action === "approve-class-migration");await refresh();toast(action === "approve-class-migration" ? "Class move approved." : "Class move declined.");}); return;
+  }
+  if (action === "complete-class-migration") {
+    const ok = confirm("Copy this class and its complete feedback history into the current school workspace?");
+    if (!ok) return;
+    await withBusy(actionEl, async()=>{const result = await completeClassMigration(state.profile, id);await refresh();toast(`Class copied successfully. Create a pupil code for the new class so existing pupils can join this school workspace.`);state.selectedClassId = result.destinationClassId;}); return;
+  }
   if (action === "reset-pupil-password") {
     const pupil = byId(state.data.users, id);
     if (!pupil) return toast("Pupil account not found.", "error");
@@ -1536,6 +1622,23 @@ app.addEventListener("change", async (event) => {
   }
   if (event.target.matches("[data-subject-select]")) { state.selectedSubjectId=event.target.value; renderShell(); return; }
   if (event.target.matches("[data-class-select]")) { state.selectedClassId=event.target.value; renderShell(); return; }
+  if (event.target.matches("[data-migration-school], [data-migration-department]")) {
+    const form = event.target.closest("form[data-form=request-class-migration]");
+    if (!form) return;
+    let structures = [];
+    try { structures = JSON.parse(form.dataset.migrationStructures || "[]"); } catch { structures = []; }
+    const schoolSelect = form.querySelector("[data-migration-school]");
+    const departmentSelect = form.querySelector("[data-migration-department]");
+    const subjectSelect = form.querySelector("[data-migration-subject]");
+    const structure = structures.find((item) => item.schoolId === schoolSelect.value) || structures[0];
+    if (!structure) return;
+    if (event.target.matches("[data-migration-school]")) {
+      departmentSelect.innerHTML = structure.departments.map((item) => `<option value="${e(item.id)}">${e(item.name)}</option>`).join("");
+    }
+    const departmentId = departmentSelect.value;
+    subjectSelect.innerHTML = structure.subjects.filter((item) => item.departmentId === departmentId).map((item) => `<option value="${e(item.id)}">${e(item.name)}</option>`).join("");
+    return;
+  }
   if (event.target.matches("[data-form-class]")) {
     const pupilSelect=event.target.form.querySelector("[data-form-pupil]");
     if(pupilSelect)pupilSelect.innerHTML=classPupilOptions(event.target.value);
@@ -1552,7 +1655,8 @@ app.addEventListener("submit", async (event) => {
   const form=event.target.closest("form[data-form]");
   if(!form)return;
   event.preventDefault();
-  const data=Object.fromEntries(new FormData(form).entries());
+  const formData = new FormData(form);
+  const data=Object.fromEntries(formData.entries());
   const submit=form.querySelector("button[type=submit],button:not([type])");
   await withBusy(submit,async()=>{
     switch(form.dataset.form){
@@ -1569,7 +1673,10 @@ app.addEventListener("submit", async (event) => {
       case "signin": { const user=await signIn(data.email,data.password); await initialiseUser(user); break; }
       case "register": { const user=await registerWithInvite(data); await initialiseUser(user); toast("Account created. Check your email for a verification link if requested."); break; }
       case "independent-teacher": { const user=await registerIndependentTeacher(data); await initialiseUser(user); toast("Individual teacher workspace created."); break; }
+      case "preview-class-join": { await modalConfirmClassJoin(data.inviteCode); break; }
+      case "join-pupil-class": { await joinPupilClass(state.profile, data.inviteCode); closeModal(); await initialiseUser(state.authUser); toast("Class added to your existing pupil account."); break; }
       case "join-school-workspace": { await joinTeacherWorkspace(state.profile, data.inviteCode); closeModal(); await initialiseUser(state.authUser); toast("School department added to your account."); break; }
+      case "request-class-migration": { await createClassMigrationRequest(state.profile, data); closeModal(); await refresh(); toast("Class move requested. The destination school or department can now approve it."); break; }
       case "add-department": await createSchoolEntity(state.profile.schoolId,"departments",{name:data.name,headIds:[]}); closeModal(); await refresh(); toast("Department added."); break;
       case "add-subject": await createSchoolEntity(state.profile.schoolId,"subjects",{name:data.name,departmentId:data.departmentId,gradeScale:data.gradeScale}); closeModal(); await refresh(); toast("Subject added."); break;
       case "add-class": {
@@ -1579,11 +1686,17 @@ app.addEventListener("submit", async (event) => {
       }
       case "assign-teacher": {
         const cls = byId(state.data.classes, data.classId);
-        const teacher = byId(state.data.users, data.teacherId);
-        if (!cls || !teacher || teacher.role !== "teacher") throw new Error("Choose a valid teacher.");
-        if (!(teacher.departmentIds || []).includes(cls.departmentId)) throw new Error("That teacher has not joined this class department.");
-        await updateSchoolEntity(state.profile.schoolId, "classes", cls.id, { teacherIds: unique([...(cls.teacherIds || []), teacher.id]) });
-        closeModal(); await refresh(); toast("Teacher assigned to class."); break;
+        if (!cls) throw new Error("Choose a valid class.");
+        const teacherIds = unique(formData.getAll("teacherIds").map(String));
+        if (!teacherIds.length) throw new Error("Select at least one teacher for the class.");
+        const personalWorkspace = currentSchool().workspaceType === "individualTeacher";
+        for (const teacherId of teacherIds) {
+          const teacher = byId(state.data.users, teacherId);
+          if (!teacher || !["teacher", "departmentHead"].includes(teacher.role)) throw new Error("Choose valid teaching staff.");
+          if (!personalWorkspace && !(teacher.departmentIds || []).includes(cls.departmentId)) throw new Error(`${teacher.displayName} has not joined this class department.`);
+        }
+        await updateSchoolEntity(state.profile.schoolId, "classes", cls.id, { teacherIds });
+        closeModal(); await refresh(); toast("Class teachers updated."); break;
       }
       case "create-invite": {
         let payload;
@@ -1591,6 +1704,10 @@ app.addEventListener("submit", async (event) => {
           const cls = byId(classesVisibleToProfile(), data.classId);
           if (!cls) throw new Error("Choose one of your own classes.");
           payload = { label: data.label, role: "pupil", scopeType: "class", scopeLabel: cls.name, classIds: [cls.id], subjectId: cls.subjectId || "", departmentIds: cls.departmentId ? [cls.departmentId] : [], createdBy: state.profile.id };
+        } else if (data.scope === "classTeacher") {
+          const cls = byId(classesVisibleToProfile(), data.classId);
+          if (!cls || currentSchool().workspaceType !== "individualTeacher" || currentSchool().ownerId !== state.profile.id) throw new Error("Only the individual workspace owner can create this co-teacher code.");
+          payload = { label: data.label, role: "teacher", scopeType: "classTeacher", scopeLabel: cls.name, classIds: [cls.id], subjectId: cls.subjectId || "", departmentIds: cls.departmentId ? [cls.departmentId] : [], createdBy: state.profile.id };
         } else if (data.scope === "departmentTeacher") {
           const department = byId(state.data.departments, data.departmentId);
           if (!department || !(state.profile.departmentIds || []).includes(department.id)) throw new Error("Choose a department you lead.");

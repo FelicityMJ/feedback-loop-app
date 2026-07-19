@@ -204,6 +204,117 @@ async function loadInvite(inviteCode) {
   return { code, schoolId, invite: inviteSnap.data() };
 }
 
+export async function previewPupilClassInvite(inviteCode) {
+  if (isDemoMode) {
+    const state = getDemoState();
+    const code = String(inviteCode || "").trim();
+    const invite = state.invites.find((item) => item.id === code && item.active === true);
+    if (!invite || invite.role !== "pupil") throw new Error("Enter an active pupil class code.");
+    const cls = state.classes.find((item) => (invite.classIds || []).includes(item.id));
+    const subject = state.subjects.find((item) => item.id === (cls?.subjectId || invite.subjectId));
+    return {
+      inviteCode: code,
+      schoolId: invite.schoolId || DEMO_SCHOOL_ID,
+      workspaceName: state.school?.name || "Demo school",
+      classId: cls?.id || "",
+      className: cls?.name || invite.scopeLabel || "Class",
+      subjectName: subject?.name || "Subject"
+    };
+  }
+  await firebaseReady;
+  const { code, schoolId, invite } = await loadInvite(inviteCode);
+  if (invite.role !== "pupil" || invite.scopeType !== "class") throw new Error("Enter a pupil class code, not a staff code.");
+  const classId = (invite.classIds || [])[0];
+  if (!classId) throw new Error("That class code is incomplete.");
+  const [schoolSnap, classSnap] = await Promise.all([
+    getDoc(doc(db, "schools", schoolId)),
+    getDoc(doc(db, "schools", schoolId, "classes", classId))
+  ]);
+  if (!schoolSnap.exists() || !classSnap.exists()) throw new Error("The class connected to that code could not be found.");
+  const cls = classSnap.data();
+  const subjectSnap = cls.subjectId ? await getDoc(doc(db, "schools", schoolId, "subjects", cls.subjectId)) : null;
+  return {
+    inviteCode: code,
+    schoolId,
+    workspaceName: schoolSnap.data().name || schoolSnap.data().shortName || "School workspace",
+    classId,
+    className: cls.name || invite.scopeLabel || "Class",
+    subjectName: subjectSnap?.exists() ? subjectSnap.data().name : "Subject"
+  };
+}
+
+export async function joinPupilClass(profile, inviteCode) {
+  if (!profile || profile.role !== "pupil") throw new Error("Only a pupil account can join a pupil class code.");
+  if (isDemoMode) {
+    const state = getDemoState();
+    const code = String(inviteCode || "").trim();
+    const invite = state.invites.find((item) => item.id === code && item.active === true && item.role === "pupil");
+    if (!invite) throw new Error("Enter an active pupil class code.");
+    for (const classId of invite.classIds || []) {
+      if (!state.memberships.some((item) => item.userId === profile.id && item.classId === classId)) {
+        const cls = state.classes.find((item) => item.id === classId);
+        state.memberships.push({ id: randomId("m-"), userId: profile.id, classId, subjectId: cls?.subjectId || invite.subjectId || "", targetGrade: "", currentGrade: "", active: true, inviteCode: code });
+      }
+    }
+    const user = state.users.find((item) => item.id === profile.id);
+    user.workspaceIds = [...new Set([...(user.workspaceIds || [user.schoolId]), invite.schoolId || user.schoolId])];
+    saveDemoState(state);
+    return clone(user);
+  }
+
+  await firebaseReady;
+  const { code, schoolId, invite } = await loadInvite(inviteCode);
+  if (invite.role !== "pupil" || invite.scopeType !== "class") throw new Error("Enter a pupil class code, not a staff code.");
+  const existingMemberships = await fetchCollection(["schools", schoolId, "memberships"], [where("userId", "==", profile.id)]);
+  const existingClassIds = new Set(existingMemberships.filter((item) => item.active !== false).map((item) => item.classId));
+  const classIds = (invite.classIds || []).filter(Boolean);
+  if (!classIds.length) throw new Error("That class code is incomplete.");
+
+  const workspaceRef = doc(db, "users", profile.id, "workspaces", schoolId);
+  const workspaceSnap = await getDoc(workspaceRef);
+  const batch = writeBatch(db);
+  if (!workspaceSnap.exists()) {
+    batch.set(workspaceRef, {
+      uid: profile.id,
+      schoolId,
+      role: "pupil",
+      departmentIds: invite.departmentIds || [],
+      workspaceOwner: false,
+      authProvider: profile.authProvider || providerName(auth.currentUser),
+      inviteCode: code,
+      active: true,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+  }
+  batch.update(doc(db, "users", profile.id), {
+    schoolId,
+    role: "pupil",
+    departmentIds: invite.departmentIds || [],
+    workspaceOwner: false,
+    inviteCode: code,
+    workspaceIds: arrayUnion(schoolId),
+    updatedAt: serverTimestamp()
+  });
+  for (const classId of classIds) {
+    if (existingClassIds.has(classId)) continue;
+    const membershipRef = doc(collection(db, "schools", schoolId, "memberships"));
+    batch.set(membershipRef, {
+      userId: profile.id,
+      classId,
+      subjectId: invite.subjectId || "",
+      targetGrade: "",
+      currentGrade: "",
+      active: true,
+      inviteCode: code,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+  }
+  await batch.commit();
+  return getUserProfile(auth.currentUser);
+}
+
 function providerName(user, fallback = "password") {
   if (user?.providerData?.some((item) => item.providerId === "google.com")) return "google";
   return fallback;
@@ -440,7 +551,16 @@ export async function joinTeacherWorkspace(profile, inviteCode) {
   if (invite.role !== "teacher") throw new Error("Enter a teacher department code.");
   const workspaceRef = doc(db, "users", profile.id, "workspaces", schoolId);
   const existing = await getDoc(workspaceRef);
-  if (existing.exists()) return switchWorkspace(profile, schoolId);
+  if (existing.exists()) {
+    await switchWorkspace(profile, schoolId);
+    for (const classId of invite.classIds || []) {
+      await updateDoc(doc(db, "schools", schoolId, "classes", classId), {
+        teacherIds: arrayUnion(profile.id),
+        updatedAt: serverTimestamp()
+      });
+    }
+    return getUserProfile(auth.currentUser);
+  }
   const batch = writeBatch(db);
   batch.set(workspaceRef, {
     uid: profile.id,
@@ -464,6 +584,16 @@ export async function joinTeacherWorkspace(profile, inviteCode) {
     updatedAt: serverTimestamp()
   });
   await batch.commit();
+  for (const classId of invite.classIds || []) {
+    try {
+      await updateDoc(doc(db, "schools", schoolId, "classes", classId), {
+        teacherIds: arrayUnion(profile.id),
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.warn("Teacher joined the workspace but could not be attached to an invited class.", classId, error);
+    }
+  }
   try {
     await addDoc(collection(db, "schools", schoolId, "auditLogs"), {
       action: "teacherJoinedWorkspace",
@@ -476,6 +606,188 @@ export async function joinTeacherWorkspace(profile, inviteCode) {
     console.warn("School joined, but the audit entry could not be written.", error);
   }
   return getUserProfile(auth.currentUser);
+}
+
+export async function loadWorkspaceStructure(profile, schoolId) {
+  if (isDemoMode) {
+    const state = getDemoState();
+    return { school: clone(state.school), departments: clone(state.departments), subjects: clone(state.subjects), membership: { role: profile.role, departmentIds: profile.departmentIds || [] } };
+  }
+  await firebaseReady;
+  const [schoolSnap, membershipSnap, departments, subjects] = await Promise.all([
+    getDoc(doc(db, "schools", schoolId)),
+    getDoc(doc(db, "users", profile.id, "workspaces", schoolId)),
+    safeFetch(["schools", schoolId, "departments"]),
+    safeFetch(["schools", schoolId, "subjects"])
+  ]);
+  if (!schoolSnap.exists() || !membershipSnap.exists() || membershipSnap.data().active === false) throw new Error("You do not have access to that school workspace.");
+  return { school: normaliseDoc(schoolSnap), departments, subjects, membership: membershipSnap.data() };
+}
+
+export async function createClassMigrationRequest(profile, data) {
+  if (isDemoMode) {
+    const state = getDemoState();
+    const sourceClass = state.classes.find((item) => item.id === data.sourceClassId);
+    const request = { id: randomId("migration-"), createdBy: profile.id, createdByName: profile.displayName, sourceWorkspaceId: profile.schoolId, sourceClassId: data.sourceClassId, sourceClassName: sourceClass?.name || "Class", destinationSchoolId: data.destinationSchoolId, destinationDepartmentId: data.destinationDepartmentId, destinationSubjectId: data.destinationSubjectId, status: "requested", requestedAt: new Date().toISOString() };
+    state.classMigrationRequests = state.classMigrationRequests || [];
+    state.classMigrationRequests.push(request);
+    saveDemoState(state);
+    return request;
+  }
+  await firebaseReady;
+  const sourceClassSnap = await getDoc(doc(db, "schools", profile.schoolId, "classes", data.sourceClassId));
+  if (!sourceClassSnap.exists()) throw new Error("The source class could not be found.");
+  const sourceSchoolSnap = await getDoc(doc(db, "schools", profile.schoolId));
+  if (!sourceSchoolSnap.exists() || sourceSchoolSnap.data().workspaceType !== "individualTeacher" || sourceSchoolSnap.data().ownerId !== profile.id) {
+    throw new Error("Only the owner of an individual teacher workspace can move this class.");
+  }
+  const [destinationMembership, destinationSchool, destinationDepartment, destinationSubject] = await Promise.all([
+    getDoc(doc(db, "users", profile.id, "workspaces", data.destinationSchoolId)),
+    getDoc(doc(db, "schools", data.destinationSchoolId)),
+    getDoc(doc(db, "schools", data.destinationSchoolId, "departments", data.destinationDepartmentId)),
+    getDoc(doc(db, "schools", data.destinationSchoolId, "subjects", data.destinationSubjectId))
+  ]);
+  if (!destinationMembership.exists() || destinationMembership.data().active === false || destinationMembership.data().role !== "teacher") throw new Error("Join the destination school as a teacher before moving a class.");
+  if (!destinationSchool.exists() || !destinationDepartment.exists() || !destinationSubject.exists()) throw new Error("Choose a valid destination department and subject.");
+  if (destinationSubject.data().departmentId !== data.destinationDepartmentId) throw new Error("The selected subject does not belong to that department.");
+  const payload = {
+    createdBy: profile.id,
+    createdByName: profile.displayName,
+    sourceWorkspaceId: profile.schoolId,
+    sourceWorkspaceName: sourceSchoolSnap.data().name || "Individual workspace",
+    sourceClassId: data.sourceClassId,
+    sourceClassName: sourceClassSnap.data().name || "Class",
+    destinationSchoolId: data.destinationSchoolId,
+    destinationSchoolName: destinationSchool.data().name || "School",
+    destinationDepartmentId: data.destinationDepartmentId,
+    destinationSubjectId: data.destinationSubjectId,
+    status: "requested",
+    requestedAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+  const ref = await addDoc(collection(db, "classMigrationRequests"), payload);
+  return { id: ref.id, ...payload };
+}
+
+export async function decideClassMigrationRequest(requestId, accepted) {
+  if (isDemoMode) {
+    const state = getDemoState();
+    const request = (state.classMigrationRequests || []).find((item) => item.id === requestId);
+    if (!request) throw new Error("Migration request not found.");
+    request.status = accepted ? "accepted" : "declined";
+    request.decidedAt = new Date().toISOString();
+    saveDemoState(state);
+    return;
+  }
+  await firebaseReady;
+  await updateDoc(doc(db, "classMigrationRequests", requestId), {
+    status: accepted ? "accepted" : "declined",
+    decidedAt: serverTimestamp(),
+    decidedBy: auth.currentUser.uid,
+    updatedAt: serverTimestamp()
+  });
+}
+
+function migratedDocId(requestId, sourceId) {
+  return `mig_${requestId}_${String(sourceId).replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
+async function commitSetOperations(operations) {
+  for (let start = 0; start < operations.length; start += 400) {
+    const batch = writeBatch(db);
+    for (const operation of operations.slice(start, start + 400)) {
+      batch.set(operation.ref, operation.data, operation.options || {});
+    }
+    await batch.commit();
+  }
+}
+
+export async function completeClassMigration(profile, requestId) {
+  if (isDemoMode) {
+    const state = getDemoState();
+    const request = (state.classMigrationRequests || []).find((item) => item.id === requestId);
+    if (!request || request.status !== "accepted") throw new Error("This class move has not been approved.");
+    request.status = "completed";
+    request.completedAt = new Date().toISOString();
+    saveDemoState(state);
+    return request;
+  }
+  await firebaseReady;
+  const requestRef = doc(db, "classMigrationRequests", requestId);
+  const requestSnap = await getDoc(requestRef);
+  if (!requestSnap.exists()) throw new Error("Class move request not found.");
+  const request = { id: requestSnap.id, ...requestSnap.data() };
+  if (request.status !== "accepted") throw new Error("This class move must be approved before it can be completed.");
+  if (request.createdBy !== profile.id) throw new Error("Only the teacher who requested this move can complete it.");
+  if (profile.schoolId !== request.destinationSchoolId) throw new Error("Switch to the destination school workspace before completing the move.");
+
+  const sourceClassSnap = await getDoc(doc(db, "schools", request.sourceWorkspaceId, "classes", request.sourceClassId));
+  if (!sourceClassSnap.exists()) throw new Error("The original class could not be found.");
+  const sourceClass = sourceClassSnap.data();
+  const [memberships, assessments, feedbackRecords, feedbackActions, interventions] = await Promise.all([
+    fetchCollection(["schools", request.sourceWorkspaceId, "memberships"], [where("classId", "==", request.sourceClassId)]),
+    fetchCollection(["schools", request.sourceWorkspaceId, "assessments"], [where("classId", "==", request.sourceClassId)]),
+    fetchCollection(["schools", request.sourceWorkspaceId, "feedbackRecords"], [where("classId", "==", request.sourceClassId)]),
+    fetchCollection(["schools", request.sourceWorkspaceId, "feedbackActions"]),
+    fetchCollection(["schools", request.sourceWorkspaceId, "interventions"], [where("classId", "==", request.sourceClassId)])
+  ]);
+  const sourceFeedbackIds = new Set(feedbackRecords.map((item) => item.id));
+  const relevantActions = feedbackActions.filter((item) => sourceFeedbackIds.has(item.feedbackId));
+  const destinationClassId = migratedDocId(request.id, request.sourceClassId);
+  const destinationTeacherIds = [profile.id];
+  for (const teacherId of sourceClass.teacherIds || []) {
+    if (destinationTeacherIds.includes(teacherId)) continue;
+    try {
+      const teacherWorkspace = await getDoc(doc(db, "users", teacherId, "workspaces", request.destinationSchoolId));
+      if (teacherWorkspace.exists() && teacherWorkspace.data().active !== false && ["teacher", "departmentHead"].includes(teacherWorkspace.data().role)) destinationTeacherIds.push(teacherId);
+    } catch (error) {
+      console.warn("Could not check whether a co-teacher has joined the destination school.", teacherId, error);
+    }
+  }
+  const now = serverTimestamp();
+  const operations = [];
+  operations.push({
+    ref: doc(db, "schools", request.destinationSchoolId, "classes", destinationClassId),
+    data: {
+      ...sourceClass,
+      subjectId: request.destinationSubjectId,
+      departmentId: request.destinationDepartmentId,
+      teacherIds: destinationTeacherIds,
+      active: true,
+      migrationRequestId: request.id,
+      migrationOriginWorkspaceId: request.sourceWorkspaceId,
+      migrationOriginClassId: request.sourceClassId,
+      createdAt: sourceClass.createdAt || now,
+      updatedAt: now
+    },
+    options: { merge: true }
+  });
+  for (const item of memberships) {
+    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "memberships", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, active: item.active !== false, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  }
+  for (const item of assessments) {
+    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "assessments", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  }
+  for (const item of feedbackRecords) {
+    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "feedbackRecords", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, subjectId: request.destinationSubjectId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  }
+  for (const item of relevantActions) {
+    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "feedbackActions", migratedDocId(request.id, item.id)), data: { ...item, feedbackId: migratedDocId(request.id, item.feedbackId), migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  }
+  for (const item of interventions) {
+    operations.push({ ref: doc(db, "schools", request.destinationSchoolId, "interventions", migratedDocId(request.id, item.id)), data: { ...item, classId: destinationClassId, migrationRequestId: request.id, migrationOriginWorkspaceId: request.sourceWorkspaceId, migrationOriginId: item.id, updatedAt: now }, options: { merge: true } });
+  }
+  await commitSetOperations(operations);
+  await updateDoc(requestRef, {
+    status: "completed",
+    destinationClassId,
+    copiedMembershipCount: memberships.length,
+    copiedAssessmentCount: assessments.length,
+    copiedFeedbackCount: feedbackRecords.length,
+    completedAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+  return { ...request, status: "completed", destinationClassId };
 }
 
 export async function switchWorkspace(profile, schoolId) {
@@ -584,14 +896,21 @@ export async function loadAppData(profile) {
       }))
     : users;
 
-  const [transferFrom, transferTo, emailChangeRequests] = await Promise.all([
+  const migrationToPromise = ["schoolAdmin", "departmentHead"].includes(profile.role)
+    ? safeFetch(["classMigrationRequests"], [where("destinationSchoolId", "==", schoolId)])
+    : Promise.resolve([]);
+
+  const [transferFrom, transferTo, emailChangeRequests, migrationFrom, migrationTo, migrationMine] = await Promise.all([
     safeFetch(["transferRequests"], [where("fromSchoolId", "==", schoolId)]),
     safeFetch(["transferRequests"], [where("toSchoolId", "==", schoolId)]),
     isPupil
       ? safeFetch(["emailChangeRequests"], [where("pupilId", "==", profile.id)])
       : profile.role === "schoolAdmin"
         ? safeFetch(["emailChangeRequests"], [where("schoolId", "==", schoolId)])
-        : Promise.resolve([])
+        : Promise.resolve([]),
+    staff ? safeFetch(["classMigrationRequests"], [where("sourceWorkspaceId", "==", schoolId)]) : Promise.resolve([]),
+    migrationToPromise,
+    staff ? safeFetch(["classMigrationRequests"], [where("createdBy", "==", profile.id)]) : Promise.resolve([])
   ]);
 
   return {
@@ -608,14 +927,15 @@ export async function loadAppData(profile) {
     interventions,
     invites,
     transferRequests: [...transferFrom, ...transferTo].filter((x, i, arr) => arr.findIndex((y) => y.id === x.id) === i),
-    emailChangeRequests
+    emailChangeRequests,
+    classMigrationRequests: [...migrationFrom, ...migrationTo, ...migrationMine].filter((x, i, arr) => arr.findIndex((y) => y.id === x.id) === i)
   };
 }
 
 export async function loadPupilPortfolio(profile) {
   if (isDemoMode) return clone(getDemoState());
   await firebaseReady;
-  const schoolIds = [...new Set([...(profile.schoolHistoryIds || []), profile.schoolId].filter(Boolean))];
+  const schoolIds = [...new Set([...(profile.workspaceIds || []), ...(profile.schoolHistoryIds || []), profile.schoolId].filter(Boolean))];
   const portfolio = {
     schools: [], departments: [], subjects: [], classes: [], memberships: [], assessments: [],
     feedbackRecords: [], feedbackActions: [], interventions: []
@@ -638,6 +958,21 @@ export async function loadPupilPortfolio(profile) {
     portfolio.feedbackRecords.push(...feedbackRecords.map((x) => ({ ...x, schoolId })));
     portfolio.feedbackActions.push(...feedbackActions.map((x) => ({ ...x, schoolId })));
   }
+  const dedupeMigrated = (items) => {
+    const chosen = new Map();
+    for (const item of items) {
+      const originKey = item.migrationOriginWorkspaceId && item.migrationOriginId
+        ? `${item.migrationOriginWorkspaceId}:${item.migrationOriginId}`
+        : `${item.schoolId}:${item.id}`;
+      const existing = chosen.get(originKey);
+      if (!existing || item.migrationRequestId) chosen.set(originKey, item);
+    }
+    return [...chosen.values()];
+  };
+  portfolio.memberships = dedupeMigrated(portfolio.memberships);
+  portfolio.assessments = dedupeMigrated(portfolio.assessments);
+  portfolio.feedbackRecords = dedupeMigrated(portfolio.feedbackRecords);
+  portfolio.feedbackActions = dedupeMigrated(portfolio.feedbackActions);
   return portfolio;
 }
 

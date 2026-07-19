@@ -1,5 +1,8 @@
 # FeedbackLoop V6 update
 
+> **Superseded by V6.2:** Use `UPDATE-GUIDE-V6.2.md` and `MULTI-ROLE-AND-MIGRATION-DESIGN-V6.2.md` for the current implementation. V6.2 reconnects pupils automatically and uses multi-role staff permissions.
+
+
 Version 6 adds continuing multi-subject pupil accounts, shared classes with several teachers, and a controlled path for moving an independently-run class into a later school-wide workspace without losing its learning history.
 
 ## Replace these files

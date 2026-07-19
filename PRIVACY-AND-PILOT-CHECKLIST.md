@@ -68,3 +68,13 @@ Agree and document:
 ## Important technical note
 
 The supplied Firestore rules enforce school and role boundaries, but a production rollout should add stricter class-level access grants or trusted server-side custom claims so ordinary teachers cannot list unrelated pupil profiles within the same school. The current version is appropriate for development and a controlled fictional-data pilot, not an unreviewed school-wide launch.
+## V6.2 permission and activation checks
+
+- Treat school and independent-teacher activation codes as high-value secrets. Create them only through an owner-controlled process and issue them to a named email where possible.
+- Test every multi-role combination using fictional accounts. Confirm that My classes, Department overview and School administration expose only the intended scope.
+- Review the audit record after every leadership change, activation and completed migration.
+- Reassign all classes before removing a teacher permission. Appoint another administrator before removing the final administrator.
+- Use `paused` only to make a workspace read-only. Set a membership to inactive when an individual person must lose access.
+- Verify that automatic pupil reconnection links only pupils from the approved source class and keeps the same Firebase UID and learner ID.
+- Compile and emulator-test the V6.2 Firestore rules before live use.
+- Before wider rollout, move staff-role mutation, paid licence enforcement and large migrations to trusted Cloud Functions.

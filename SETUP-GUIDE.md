@@ -1,315 +1,188 @@
-# FeedbackLoop — exact setup guide
+# FeedbackLoop V6.2 — setup guide
 
-This version deliberately follows the same simple pattern as the existing `python-practice-app`: static files in GitHub Pages, with Firebase Authentication and Firestore supplying the accounts and data.
+This app uses static files on GitHub Pages and Firebase Authentication/Firestore. Complete the sections in order and use fictional accounts until every permission path has been tested.
 
-Do the sections in order. You do not need to edit the large `app.js` file.
+## 1. Publish the repository
 
----
+1. Upload the complete package to the existing `feedback-loop-app` repository.
+2. Keep the existing `js/firebase-config.js` values.
+3. Enable GitHub Pages from the `main` branch and repository root.
+4. Wait for the deployment, then hard-refresh with `Ctrl + Shift + R`.
 
-## Part 1 — preview the finished demo first
+To preview locally:
 
-1. Create a new GitHub repository called `feedback-loop-app`.
-2. Make it **Public** if you are using GitHub Pages on a free GitHub account.
-3. Upload every file and folder from this package, including:
-   - `.nojekyll`
-   - `index.html`
-   - `styles.css`
-   - the complete `js` folder
-   - `firestore.rules`
-   - `firestore.indexes.json`
-4. Commit the files to the `main` branch.
-5. In GitHub, open **Settings → Pages**.
-6. Under **Build and deployment**, choose:
-   - Source: **Deploy from a branch**
-   - Branch: **main**
-   - Folder: **/(root)**
-7. Save.
-8. Open:
-
-   `https://felicitymj.github.io/feedback-loop-app/`
-
-Because the Firebase configuration still contains placeholders, the site will open in **demo mode**. Use the four demo buttons to inspect the pupil, teacher, department-head and school-administrator dashboards.
-
----
-
-## Part 2 — create a separate Firebase project
-
-Use a separate project rather than putting school feedback records inside `python-practice-5b289`. It keeps ComputingNat5 practice data and school feedback data isolated.
-
-1. Open Firebase Console.
-2. Choose **Create a project**.
-3. Suggested project name: `feedback-loop-school`.
-4. Google Analytics is not needed for the first version.
-5. When the project opens, select the **Web app** icon.
-6. App nickname: `FeedbackLoop web`.
-7. Do not enable Firebase Hosting at this stage because GitHub Pages is hosting the files.
-8. Select **Register app**.
-9. Firebase shows a configuration object beginning with:
-
-```javascript
-const firebaseConfig = {
-  apiKey: "...",
-  authDomain: "...",
-  projectId: "..."
-};
+```bash
+python -m http.server 8000
 ```
 
-10. In the GitHub repository, open `js/firebase-config.js`.
-11. Select the pencil/edit button.
-12. Replace only the placeholder values inside `firebaseConfig` with the values Firebase supplied.
-13. Change `publicAppUrl` to:
+## 2. Firebase Authentication
 
-```javascript
-publicAppUrl: "https://felicitymj.github.io/feedback-loop-app/"
+Enable:
+
+- Email/Password;
+- Google.
+
+Add the GitHub Pages or custom domain under **Authentication → Settings → Authorised domains**.
+
+## 3. Firestore
+
+Use the existing V6.1 Firestore database. Before updating:
+
+1. take a backup/export;
+2. copy the complete V6.2 `firestore.rules` into **Firestore Database → Rules**;
+3. publish the rules;
+4. retain the supplied `firestore.indexes.json`.
+
+Do not manually delete or recreate existing `users`, `schools`, classes or pupil records.
+
+## 4. Upgrade existing V6.1 accounts
+
+V6.2 can interpret old roles immediately, but the owner backfill upgrades the full pilot consistently.
+
+Install the Admin SDK locally:
+
+```bash
+npm install --no-save firebase-admin
 ```
 
-14. Commit the change.
+Authenticate with Application Default Credentials or a protected service-account file, then run:
 
-Once that commit publishes, demo mode turns off and the site connects to Firebase.
+```bash
+node scripts/backfill-v62-roles.mjs
+```
 
----
+Review the dry run. To apply:
 
-## Part 3 — enable sign-in
+```bash
+node scripts/backfill-v62-roles.mjs --apply
+```
 
-1. In Firebase Console, open **Build → Authentication**.
-2. Select **Get started**.
-3. Open the **Sign-in method** tab.
-4. Enable **Email/Password**.
-5. Enable **Google** as well.
-6. Open **Authentication → Settings → Authorised domains**.
-7. Add:
+The script preserves all existing IDs, classes, `teacherIds`, memberships, results, feedback and learner history.
 
-   `felicitymj.github.io`
+## 5. Create a school pilot activation code
 
-This is required for Google sign-in and email-action links opened from the GitHub Pages site.
+The normal browser app cannot create top-level activation codes. Create them with the owner script:
 
----
+```bash
+node scripts/create-v62-activation-code.mjs --type=school --email=admin@example.org --label="School pilot"
+```
 
-## Part 4 — create Firestore
-
-1. Open **Build → Firestore Database**.
-2. Select **Create database**.
-3. Choose **Production mode**.
-4. Select the London region used for the other app: **europe-west2**.
-5. Create the database.
-
-Do not add pupil data yet.
-
----
-
-## Part 5 — publish the supplied Firestore rules
-
-1. In the GitHub repository, open `firestore.rules`.
-2. Copy the entire file.
-3. In Firebase Console, open **Firestore Database → Rules**.
-4. Replace the existing rules with the copied rules.
-5. Select **Publish**.
-
-The rules separate schools, keep pupil records linked to their permanent Firebase user ID, and stop pupils editing teacher feedback.
-
-### Indexes
-
-Most queries use Firestore's automatic indexes. If Firebase displays an error saying an index is required, open the link in the error and select **Create index**.
-
-The supplied `firestore.indexes.json` is also ready for later Firebase CLI deployment.
-
----
-
-## Part 6 — create the first school administrator
-
-This is the only account created manually. After this, invitations are generated inside the app.
-
-### A. Create the sign-in account
-
-1. Open **Authentication → Users**.
-2. Select **Add user**.
-3. Enter your email address and a temporary strong password.
-4. Create the user.
-5. Copy the user's **User UID**.
-
-### B. Create the school document
-
-1. Open **Firestore Database → Data**.
-2. Select **Start collection**.
-3. Collection ID:
-
-   `schools`
-
-4. Document ID: use a permanent lower-case school ID, for example:
-
-   `oldmachar-academy`
-
-5. Add these fields:
-
-| Field | Type | Example value |
-|---|---|---|
-| `name` | string | `Oldmachar Academy` |
-| `shortName` | string | `Oldmachar` |
-| `active` | boolean | `true` |
-| `transferCode` | string | `oldmachar-academy~CHANGE-THIS-TO-A-LONG-RANDOM-CODE` |
-
-The text before `~` must exactly match the document ID. Make the text after `~` long and hard to guess.
-
-### C. Create your administrator profile
-
-1. Go back to the Firestore root.
-2. Start a collection called:
-
-   `users`
-
-3. Use your copied Firebase **User UID** as the document ID.
-4. Add these fields:
+Or create an uppercase document manually in `activationCodes` with:
 
 | Field | Type | Value |
 |---|---|---|
-| `displayName` | string | Your name |
-| `email` | string | The same email used in Authentication |
-| `role` | string | `schoolAdmin` |
-| `schoolId` | string | The exact school document ID |
-| `departmentIds` | array | Empty array |
-| `schoolHistoryIds` | array | Empty array |
+| `accountType` | string | `school` |
 | `active` | boolean | `true` |
+| `licenceType` | string | `complimentaryPilot` |
+| `workspaceStatus` | string | `active` |
+| `assignedEmail` | string | optional exact activating email |
+| `trialEndsAt` | string/null | ISO date-time for a trial, otherwise null |
+| `sponsorName` | string | optional |
+| `label` | string | owner description |
 
-5. Open the FeedbackLoop site and sign in.
+Do not add redemption fields. The app writes them when the code is used.
 
-You should now see the school-administrator dashboard.
+## 6. Activate a new school
 
----
+1. Open FeedbackLoop signed out.
+2. Choose **School pilot**.
+3. Enter the activating person’s real name, school name and owner-issued activation code.
+4. Choose whether they should also receive teacher access.
+5. Create the account with Email/Password or Google.
 
-## Part 7 — create the department-head account
+The app creates the school, administrator profile and workspace membership atomically. The activation code then becomes inactive.
 
-Sign in as the school administrator and work in this order:
+## 7. Complete initial school setup
 
-1. Open **School setup**.
-2. Add the departments.
-3. Add the subjects and connect each subject to its department.
-4. Select **Create department-head code**.
-5. Choose the correct department and generate the reusable code.
-6. Give that code privately to the person who leads the department.
-7. The department head opens FeedbackLoop, chooses **Join a school**, and creates their account using that code.
+The activating administrator can:
 
-The code decides that the new account is a department-head account and links it to the chosen department. The user does not select their own role.
+1. open **School administration → School setup**;
+2. create departments;
+3. create subjects;
+4. create classes, initially unassigned or assigned to an existing teacher;
+5. open **Staff roles & codes** and manage their own permissions;
+6. temporarily give themselves department-head access to one or more departments;
+7. appoint permanent department heads;
+8. remove only their own department-head permission while retaining administrator and teacher access.
 
----
+The final administrator cannot be removed. A teacher cannot lose teacher access until their classes have been reassigned.
 
-## Part 8 — add teachers through a department code
+## 8. Add staff
 
-1. The department head signs in.
-2. On **Department overview**, select **Teacher department code**.
-3. Choose their department and generate a reusable department code.
-4. Share that code privately with the teachers joining that department.
-5. Each teacher opens FeedbackLoop and chooses **Join a school**.
-6. They enter their name, email, password and the department code.
-7. FeedbackLoop creates a teacher profile linked to that department.
-8. The department head opens **Classes** and uses **Assign teacher** to link the teacher to the appropriate classes.
+A school administrator opens **School administration → Staff roles & codes → Create internal staff code**.
 
-The department code does not automatically put every teacher into every class. Class assignment remains under the department head's control.
+The code can grant:
 
----
+- teacher;
+- department head plus teacher;
+- school administrator;
+- any safe combination of those permissions.
 
-## Part 9 — add pupils through a class code
+For a new account, the staff member chooses **Join with code**. For an existing FeedbackLoop staff account, they sign in and use **Add another staff workspace** or the equivalent add-workspace action. Permissions are added to the same school membership.
 
-1. Once assigned to a class, the teacher opens **My classes**.
-2. They select **Pupil code** for that class.
-3. FeedbackLoop generates a reusable class code.
-4. The teacher shares that code only with pupils in the class.
-5. Each pupil opens the site and chooses **Join a school**.
-6. They enter their name, email, password and the class code.
-7. Firebase creates a permanent user UID and FeedbackLoop creates a separate `learnerId` such as `L-2F4A9D7C`.
-8. The pupil is automatically added to that class and sees its subject on their dashboard.
+Department heads can create teacher codes for departments they lead. Department-head codes from V6.1 automatically include teacher permission in V6.2.
 
-The teacher can disable an old class code and generate a replacement at any time. The pupil's learner ID remains stable if their email or school later changes.
+## 9. Add pupils
 
----
+1. Assign at least one teacher to the class.
+2. That teacher opens **My classes**.
+3. Create a pupil class code.
+4. A new pupil chooses **Join with code** and creates one account.
+5. An existing pupil signs in and chooses **Join another class**.
 
-## Part 10 — everyday feedback workflow
+The same Firebase UID and learner ID are retained across class and workspace memberships.
 
-Teachers do not need to type pupils' marks or feedback into the system.
+## 10. Independent-teacher pilot activation
 
-1. The teacher marks the work and tells the class to open **My feedback record**.
-2. Each pupil selects **New feedback record**.
-3. The pupil chooses the feedback type. The form changes automatically:
-   - **Verbal** and **Written Feedback** do not require test marks;
-   - **Prelim**, **Class Test** and **Unit Assessment** require the mark and total;
-   - homework, coursework, practical work and exam-question practice allow an optional result.
-4. For a prelim, the pupil enters the prelim name, date, paper/section, mark and total.
-5. FeedbackLoop calculates the percentage and grade using:
-   - A1: 85% and above;
-   - A2: 70–84%;
-   - B3: 65–69%;
-   - B4: 60–64%;
-   - C5: 55–59%;
-   - C6: 50–54%;
-   - D7: 45–49%;
-   - D8: 40–44%;
-   - No Award: 39% and below.
-6. The pupil writes what went well and what they must watch out for next time. They can use bold and coloured highlighting.
-7. The page displays **Unsaved changes**, **Saving…**, **Saved at…**, or **Couldn’t save**.
-8. Autosaved drafts remain available under **Continue a draft**, including on the next day.
-9. The teacher opens **Live feedback**. Pupil drafts appear and update automatically while pupils type.
-10. When a pupil selects **Finish and add to my record**, any result is added to their grade graph immediately. No teacher confirmation is required.
-11. The pupil can later add an improvement action and close the feedback loop. Teacher review remains available when staff want to use it, but it is not part of entering the original record.
+Create an owner-issued teacher code:
 
-Publish the supplied `firestore.rules` after this update. The new rules permit pupils to autosave only their own records and allow linked staff to read the incoming drafts.
+```bash
+node scripts/create-v62-activation-code.mjs --type=teacher --email=teacher@example.org --label="Independent teacher pilot"
+```
 
----
+The teacher chooses **Teacher pilot** when signed out. The app creates a private individual-teacher workspace. They can later join a participating school using a school-generated staff code without creating another account.
 
-## Part 11 — changing a pupil's school email
+## 11. Workspace state
 
-Do this before the old school account is disabled.
+Change `schools/{schoolId}.workspaceStatus` only through owner administration during the pilot:
 
-1. The pupil opens **Account & transfer**.
-2. They select **Request email change**.
-3. They enter a personal email or their new-school email.
-4. The school administrator opens **Transfers & email**.
-5. The administrator approves the request.
-6. The pupil returns to the page and selects **Send verification to new email**.
-7. Firebase sends a verification link to the new address.
-8. When the pupil opens the link, Firebase changes the login email but keeps the same UID and learner profile.
-9. On the next sign-in, FeedbackLoop synchronises the verified email into the pupil profile.
+- `active` — normal use;
+- `paused` — data is visible but writes are blocked;
+- `trial` — the trial end is displayed and the browser becomes read-only after expiry.
 
-The old school email is no longer the identity of the account.
+Keep `licence.status` aligned with `workspaceStatus`.
 
----
+For a trial activation code:
 
-## Part 12 — transferring to another participating school
+```bash
+node scripts/create-v62-activation-code.mjs --type=school --status=trial --trial-ends=2026-10-31
+```
 
-1. The destination school's administrator gives the pupil its `transferCode`.
-2. The pupil opens **Account & transfer → Request transfer**.
-3. The pupil chooses:
-   - **Summary transfer**; or
-   - **Start fresh**, keeping old history private.
-4. The destination school administrator opens **Transfers & email**.
-5. They review the pupil's learner summary and accept or decline.
-6. The pupil selects **Complete transfer** after acceptance.
-7. The pupil account moves to the new school but keeps the same Firebase UID and learner ID.
-8. Old feedback remains pupil-visible and downloadable.
-9. The old school retains its own historical records but does not see records created by the new school.
+## 12. Move an independent class into a school
 
-The first version shares a concise summary rather than copying the full old-school database into the new school.
+1. The independent teacher first joins the destination school as a teacher.
+2. In the individual workspace, choose **Move to school** for the class.
+3. Select the destination school, department and subject.
+4. A destination school administrator or relevant department head approves it.
+5. The teacher switches to the destination school.
+6. Choose **Start migration**.
+7. If the browser closes or the connection fails, return and choose **Resume migration**.
 
----
+V6.2 copies class structure, memberships, assessments, feedback, actions and interventions in resumable phases. Existing pupils are then connected automatically to the destination school with the same account. They do not need a new code or new learner ID.
 
-## Part 13 — downloading the pupil record
+## 13. Test before the pilot
 
-From **My learning record**, a pupil can choose:
+Use fictional accounts to verify:
 
-- **Download spreadsheet** — CSV file;
-- **Download data** — structured JSON backup;
-- **Printable PDF** — opens the print view, then choose **Save as PDF**.
+- a teacher sees only assigned classes;
+- a head can switch between My classes and Department overview;
+- a multi-role administrator can switch across all three areas;
+- final-administrator and assigned-class protections work;
+- activation codes cannot be reused;
+- paused workspaces are read-only;
+- interrupted migrations resume without duplicates;
+- pupils reconnect automatically;
+- source data remains intact;
+- audit entries are visible only to school administrators.
 
-Teacher-only notes and interventions are excluded from the pupil export.
-
----
-
-## Part 14 — before real pupil use
-
-Use only fictional test pupils until the school or local authority has approved the pilot.
-
-Complete the separate `PRIVACY-AND-PILOT-CHECKLIST.md`, including a DPIA, privacy information, retention rules, access testing and a review of the Firebase/Google terms used by the school.
-
-## Licence file
-
-Upload the supplied `LICENSE` file to the root of the GitHub repository beside
-`README.md` and `index.html`. It records that FeedbackLoop is proprietary
-software and is not being released under an open-source licence.
+Compile the rules in a test Firebase project or Firestore emulator before using real pupil data. The browser build sandbox used to assemble this package did not permit a live local-page smoke test or Firebase CLI download.

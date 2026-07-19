@@ -469,3 +469,46 @@ tbody tr:hover { background: #fafbff; }
 .check-card small {
   color: var(--muted, #687086);
 }
+
+/* V6.2 multi-role, activation and workspace-status controls */
+.auth-tabs-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.auth-tabs-four .auth-tab { padding-inline: 7px; font-size: .79rem; }
+.area-switcher {
+  display: flex;
+  gap: 7px;
+  padding: 5px;
+  margin: 0 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255,255,255,.88);
+  overflow-x: auto;
+}
+.area-switch {
+  flex: 1 0 max-content;
+  border: 0;
+  border-radius: 10px;
+  padding: 9px 13px;
+  background: transparent;
+  color: #59647d;
+  font-weight: 800;
+}
+.area-switch:hover { background: #eef2ff; color: var(--primary-dark); }
+.area-switch.active { background: var(--primary); color: white; box-shadow: 0 5px 14px rgba(49,87,213,.2); }
+.workspace-banner {
+  padding: 9px 18px;
+  text-align: center;
+  color: #29408d;
+  background: #eaf0ff;
+  border-bottom: 1px solid #cfdbff;
+  font-size: .84rem;
+}
+.workspace-banner-paused { color: #7c4b06; background: #fff4dd; border-bottom-color: #f4ddae; }
+
+@media (max-width: 860px) {
+  .auth-tabs-four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .area-switcher { margin: 0 10px 10px; }
+}
+
+@media (max-width: 520px) {
+  .auth-tabs-four { grid-template-columns: 1fr; }
+}

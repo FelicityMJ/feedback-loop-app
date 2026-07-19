@@ -1,36 +1,42 @@
-# FeedbackLoop
+# FeedbackLoop V6.2
 
-A static GitHub/Firebase school feedback platform based on the workflow in `Feedback_Tracker_Pro_Microsoft_Teams_v4.xlsx`.
+FeedbackLoop is a static GitHub Pages/Firebase school feedback platform built around pupil-entered feedback, teacher class dashboards, department oversight and portable learner histories.
 
-## What is already built
+## V6.2 highlights
 
-- Four roles: school administrator, department head, teacher and pupil.
-- School → department → subject → class structure.
-- Role-scoped reusable codes: administrators create department-head codes, department heads create teacher department codes, and teachers create pupil class codes.
-- Department heads can assign joined teachers to classes.
-- Pupil-created feedback records with type-driven fields for verbal feedback, prelims, tests, homework, coursework and practical work.
-- Autosaved drafts that can be continued the next day, with a visible save status.
-- Live teacher monitoring of pupil drafts through Firestore realtime updates.
-- Rich pupil notes with bold text and yellow, green, pink or blue highlighting.
-- Assessment results, percentages, detailed A1–D8 grades and target grades.
-- Pupil grade-versus-target graph.
-- Strengths, next steps and traffic-light feedback.
-- Pupil reflection, action evidence, optional teacher review and closed feedback loops.
-- Whole-class teacher dashboard and individual pupil dashboard.
-- Department overview and multi-indicator at-risk flags.
-- Intervention records.
-- Permanent learner ID independent of email address.
-- School-authorised email change workflow.
-- Destination-school transfer request and acceptance workflow.
-- Pupil downloads: CSV, JSON and printable report/PDF.
-- Demo mode with realistic example data.
-- Firebase Authentication, Firestore integration and security rules.
+- One staff login can hold school-administrator, department-head and teacher permissions in the same school.
+- Staff switch between **My classes**, **Department overview** and **School administration** without separate profiles.
+- Department heads automatically retain teacher access.
+- School administrators can manage staff permissions, school setup, internal codes, licences, migration approvals and audit records.
+- Initial school and independent-teacher workspaces require an owner-issued pilot activation code.
+- Complimentary, active, paused and trial workspace states are represented without deleting school data.
+- Existing V6.1 single-role accounts convert safely to V6.2 permission maps.
+- Class migration is browser-based, deterministic and resumable.
+- Existing pupils reconnect to the destination workspace automatically with the same account and learner ID.
+- Classes, results, feedback, reflections and interventions retain migration-origin metadata so histories are not duplicated in exports.
 
-## Open the demo
+## Existing learning workflow
 
-The app automatically runs in demo mode while `js/firebase-config.js` still contains placeholder values.
+The app also includes:
 
-Because the app uses JavaScript modules, preview it through a small local web server rather than double-clicking `index.html`:
+- school → department → subject → class structure;
+- reusable pupil class codes and scoped staff codes;
+- multiple teachers per class;
+- pupil-created feedback and assessment records;
+- autosaved drafts and live teacher monitoring;
+- rich-text strengths and next steps;
+- detailed grade and target tracking;
+- pupil reflection and closed feedback loops;
+- class, pupil and department dashboards;
+- at-risk indicators and interventions;
+- portable learner IDs, email-change approval and school transfer requests;
+- CSV, JSON and printable pupil exports;
+- Firebase Authentication, Firestore and security rules;
+- a V6.2 multi-role demo.
+
+## Preview
+
+Run through a local web server because the app uses JavaScript modules:
 
 ```bash
 python -m http.server 8000
@@ -38,57 +44,31 @@ python -m http.server 8000
 
 Then open `http://localhost:8000`.
 
-The easiest route for the owner is to upload the folder to GitHub Pages and preview the supplied demo there before connecting Firebase.
+When Firebase is configured, the site connects to the project in `js/firebase-config.js`. Set `appSettings.forceDemoMode` to `true` temporarily to preview the fictional demo against a configured project.
 
-## Important pilot limitation
+## Upgrade from V6.1
 
-The transfer workflow moves the pupil account and shares a concise learner summary. Full historical records remain visible to the pupil and downloadable, but are not automatically copied into the destination school's database in this first version. That protects old-school records while the governance and consent model is reviewed.
+Read `UPDATE-GUIDE-V6.2.md` before replacing files or publishing rules. The supplied `scripts/backfill-v62-roles.mjs` has a dry-run mode and does not alter class IDs, pupils, results or feedback history.
 
 ## Main files
 
 - `index.html` — app entry point.
-- `styles.css` — responsive visual design.
-- `js/app.js` — dashboards and user interactions.
-- `js/firebase-service.js` — authentication and Firestore data access.
-- `js/firebase-config.js` — paste the Firebase web configuration here.
-- `firestore.rules` — database access rules.
-- `firestore.indexes.json` — suggested indexes.
-- `SETUP-GUIDE.md` — exact owner setup steps.
-- `PRIVACY-AND-PILOT-CHECKLIST.md` — checks before using real pupil data.
+- `styles.css` — responsive interface.
+- `js/app.js` — dashboards, role-area switching and interactions.
+- `js/firebase-service.js` — authentication, permissions, Firestore access and migration.
+- `js/demo-data.js` — fictional V6.2 data.
+- `js/firebase-config.js` — the existing Firebase web configuration.
+- `firestore.rules` — V6.2 access rules.
+- `firestore.indexes.json` — index configuration.
+- `SETUP-GUIDE.md` — owner setup instructions.
+- `UPDATE-GUIDE-V6.2.md` — exact V6.1 upgrade sequence.
+- `MULTI-ROLE-AND-MIGRATION-DESIGN-V6.2.md` — technical design.
+- `scripts` — owner-only Admin SDK tools for activation codes and backfill.
 
-## Recommended repository name
+## Pilot boundary
 
-`feedback-loop-app`
-
-This gives a GitHub Pages address such as:
-
-`https://felicitymj.github.io/feedback-loop-app/`
+Continue to use fictional accounts until the V6.2 rules have been compiled and tested in a separate Firebase project or Firestore emulator. Before unrestricted production use, move staff-role mutation, licence enforcement and larger migrations to trusted Cloud Functions.
 
 ## Licence
 
-Copyright © 2026 Felicity Miller. All rights reserved.
-
-This is proprietary software. See the `LICENSE` file for the full terms.
-
-## V5 account options
-
-FeedbackLoop now supports three entry routes:
-
-1. **Sign in** — for an existing account, using email/password or Google.
-2. **Join with code** — pupils use a class code and teachers use a department code.
-3. **Teacher account** — an individual teacher creates a full private workspace without waiting for a school account.
-
-An individual teacher can later add a school workspace to the same account using a department code. The top-bar workspace selector keeps personal and school data separate.
-
-Pupil accounts use real full names. Email/password pupils can receive a secure password-reset email; Google pupils recover access through their Google account.
-
-## Version 6: continuing accounts and school adoption
-
-- Pupils can join additional classes and subjects from inside their existing account.
-- One pupil login can hold memberships in several independent or school workspaces.
-- Classes can be assigned to several teachers.
-- Individual-workspace owners can create co-teacher class codes.
-- Independently-run classes can be copied into a later school-wide workspace with results, feedback, reflections and interventions preserved.
-- Existing pupils reconnect to the migrated school class with the same account and learner ID.
-
-See `UPDATE-GUIDE-V6.md` and `WORKSPACE-AND-MIGRATION-DESIGN-V6.md`.
+Copyright © 2026 Felicity Miller. All rights reserved. See `LICENSE.txt`.

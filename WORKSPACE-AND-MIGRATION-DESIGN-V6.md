@@ -1,5 +1,8 @@
 # Workspace and migration design — V6
 
+> **Superseded by V6.2:** Use `UPDATE-GUIDE-V6.2.md` and `MULTI-ROLE-AND-MIGRATION-DESIGN-V6.2.md` for the current implementation. V6.2 reconnects pupils automatically and uses multi-role staff permissions.
+
+
 ## Permanent identity
 
 A person has one Firebase Authentication account and one top-level `users/{uid}` profile. A pupil's `learnerId` is not replaced when another class or workspace is added.

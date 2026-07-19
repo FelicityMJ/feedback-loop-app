@@ -276,7 +276,11 @@ service cloud.firestore {
         allow read: if canReadSchool(schoolId);
         allow create: if isStaff(schoolId);
         allow update: if isStaff(schoolId);
-        allow delete: if isSchoolAdmin(schoolId);
+
+        // Classes are retained and archived rather than permanently deleted.
+        // This prevents a departing or disgruntled member of staff from
+        // removing the class record that links its pupils and history.
+        allow delete: if false;
       }
 
       match /memberships/{membershipId} {
@@ -305,7 +309,11 @@ service cloud.firestore {
             )
           );
 
-        allow update, delete: if isStaff(schoolId);
+        allow update: if isStaff(schoolId);
+
+        // Pupil memberships are deactivated rather than deleted so the
+        // historical link between the pupil, class and feedback is preserved.
+        allow delete: if false;
       }
 
       match /assessments/{assessmentId} {
@@ -329,7 +337,9 @@ service cloud.firestore {
               'entrySource', 'verificationStatus', 'feedbackRecordId', 'updatedAt'
             ]));
 
-        allow delete: if isStaff(schoolId);
+        // Assessment history is retained. Corrections are made by update;
+        // permanent erasure must use a separate controlled administrator process.
+        allow delete: if false;
       }
 
       match /feedbackRecords/{feedbackId} {
@@ -367,7 +377,8 @@ service cloud.firestore {
               'status', 'updatedAt'
             ]));
 
-        allow delete: if isStaff(schoolId);
+        // Feedback records are never hard-deleted by browser clients.
+        allow delete: if false;
       }
 
       match /feedbackActions/{actionId} {
@@ -383,11 +394,13 @@ service cloud.firestore {
               'reflection', 'actionTaken', 'confidenceBefore', 'confidenceAfter',
               'status', 'submittedAt', 'updatedAt'
             ]));
-        allow delete: if isSchoolAdmin(schoolId);
+        // Reflections and completed actions remain part of the audit trail.
+        allow delete: if false;
       }
 
       match /interventions/{interventionId} {
-        allow read, write: if isStaff(schoolId);
+        allow read, create, update: if isStaff(schoolId);
+        allow delete: if false;
       }
 
       match /invites/{inviteCode} {

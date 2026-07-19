@@ -317,7 +317,7 @@ export async function joinPupilClass(profile, inviteCode) {
     const invite = state.invites.find((item) => item.id === code && item.active === true && item.role === "pupil");
     if (!invite) throw new Error("Enter an active pupil class code.");
     for (const classId of invite.classIds || []) {
-      if (!state.memberships.some((item) => item.userId === profile.id && item.classId === classId)) {
+      if (!state.memberships.some((item) => item.userId === profile.id && item.classId === classId && item.active !== false)) {
         const cls = state.classes.find((item) => item.id === classId);
         state.memberships.push({ id: randomId("m-"), userId: profile.id, classId, subjectId: cls?.subjectId || invite.subjectId || "", targetGrade: "", currentGrade: "", active: true, inviteCode: code });
       }
@@ -331,14 +331,29 @@ export async function joinPupilClass(profile, inviteCode) {
   await firebaseReady;
   const { code, schoolId, invite } = await loadInvite(inviteCode);
   if (invite.role !== "pupil" || invite.scopeType !== "class") throw new Error("Enter a pupil class code, not a staff code.");
-  const existingMemberships = await fetchCollection(["schools", schoolId, "memberships"], [where("userId", "==", profile.id)]);
-  const existingClassIds = new Set(existingMemberships.filter((item) => item.active !== false).map((item) => item.classId));
+
   const classIds = (invite.classIds || []).filter(Boolean);
   if (!classIds.length) throw new Error("That class code is incomplete.");
 
-  const workspaceRef = doc(db, "users", profile.id, "workspaces", schoolId);
-  const workspaceSnap = await getDoc(workspaceRef);
+  const [existingMemberships, workspaceSnap] = await Promise.all([
+    fetchCollection(["schools", schoolId, "memberships"], [where("userId", "==", profile.id)]),
+    getDoc(doc(db, "users", profile.id, "workspaces", schoolId))
+  ]);
+  const existingClassIds = new Set(existingMemberships.filter((item) => item.active !== false).map((item) => item.classId));
+  const missingClassIds = classIds.filter((classId) => !existingClassIds.has(classId));
+  const currentWorkspaceIds = [...new Set([...(profile.workspaceIds || []), profile.schoolId].filter(Boolean))];
+  const needsWorkspace = !workspaceSnap.exists();
+  const needsProfileSwitch = profile.schoolId !== schoolId || !currentWorkspaceIds.includes(schoolId);
+
+  // A pupil may already appear in the teacher's roster while an older rule set
+  // prevented the pupil from reading that membership. In that case no duplicate
+  // membership or unnecessary workspace update is required.
+  if (!needsWorkspace && !needsProfileSwitch && !missingClassIds.length) {
+    return getUserProfile(auth.currentUser);
+  }
+
   const batch = writeBatch(db);
+  const workspaceRef = doc(db, "users", profile.id, "workspaces", schoolId);
   const pupilWorkspacePayload = {
     uid: profile.id,
     schoolId,
@@ -353,25 +368,27 @@ export async function joinPupilClass(profile, inviteCode) {
     active: true,
     updatedAt: serverTimestamp()
   };
-  if (!workspaceSnap.exists()) {
+
+  if (needsWorkspace) {
     batch.set(workspaceRef, { ...pupilWorkspacePayload, createdAt: serverTimestamp() });
-  } else {
-    batch.set(workspaceRef, pupilWorkspacePayload, { merge: true });
   }
-  batch.update(doc(db, "users", profile.id), {
-    schoolId,
-    role: "pupil",
-    roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true },
-    roleSchemaVersion: 2,
-    departmentIds: invite.departmentIds || [],
-    departmentHeadDepartmentIds: [],
-    workspaceOwner: false,
-    inviteCode: code,
-    workspaceIds: arrayUnion(schoolId),
-    updatedAt: serverTimestamp()
-  });
-  for (const classId of classIds) {
-    if (existingClassIds.has(classId)) continue;
+
+  if (needsWorkspace || needsProfileSwitch) {
+    batch.update(doc(db, "users", profile.id), {
+      schoolId,
+      role: "pupil",
+      roles: { schoolAdmin: false, departmentHead: false, teacher: false, pupil: true },
+      roleSchemaVersion: 2,
+      departmentIds: invite.departmentIds || [],
+      departmentHeadDepartmentIds: [],
+      workspaceOwner: false,
+      inviteCode: code,
+      workspaceIds: arrayUnion(schoolId),
+      updatedAt: serverTimestamp()
+    });
+  }
+
+  for (const classId of missingClassIds) {
     const membershipRef = doc(collection(db, "schools", schoolId, "memberships"));
     batch.set(membershipRef, {
       userId: profile.id,
@@ -385,6 +402,7 @@ export async function joinPupilClass(profile, inviteCode) {
       updatedAt: serverTimestamp()
     });
   }
+
   await batch.commit();
   return getUserProfile(auth.currentUser);
 }

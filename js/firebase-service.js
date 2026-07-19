@@ -168,6 +168,47 @@ async function safeFetch(pathParts, constraints = []) {
   }
 }
 
+async function fetchPupilFeedbackSessions(schoolId, pupilUid, classes, memberships) {
+  let queried = [];
+  try {
+    queried = await fetchCollection(
+      ["schools", schoolId, "feedbackSessions"],
+      [where("pupilIds", "array-contains", pupilUid)]
+    );
+  } catch (error) {
+    // Older deployments can reject the collection query even when the pupil is
+    // listed on the session. The class keeps direct IDs as a reliable fallback.
+    console.warn("Pupil feedback-session query failed; using class session links.", error);
+  }
+
+  const pupilClassIds = new Set(
+    (memberships || [])
+      .filter((membership) => membership.userId === pupilUid && membership.active !== false)
+      .map((membership) => membership.classId)
+      .filter(Boolean)
+  );
+  const linkedSessionIds = [...new Set(
+    (classes || [])
+      .filter((cls) => pupilClassIds.has(cls.id))
+      .flatMap((cls) => Array.isArray(cls.openFeedbackSessionIds) ? cls.openFeedbackSessionIds : [])
+      .filter(Boolean)
+  )];
+
+  const linked = (await Promise.all(linkedSessionIds.map(async (sessionId) => {
+    try {
+      const snap = await getDoc(doc(db, "schools", schoolId, "feedbackSessions", sessionId));
+      return snap.exists() ? normaliseDoc(snap) : null;
+    } catch (error) {
+      console.warn("Linked feedback session could not be loaded", sessionId, error);
+      return null;
+    }
+  }))).filter(Boolean);
+
+  return [...queried, ...linked].filter(
+    (session, index, array) => array.findIndex((other) => other.id === session.id) === index
+  );
+}
+
 export function observeAuth(callback) {
   if (isDemoMode) {
     queueMicrotask(() => callback(getDemoUser()));
@@ -1119,7 +1160,7 @@ export async function loadAppData(profile) {
 
   const [
     users, memberships, assessments, feedbackRecords, feedbackActions, interventions,
-    feedbackSessions, improvementBank, riskOverrides, invites, auditLogs
+    improvementBank, riskOverrides, invites, auditLogs
   ] = await Promise.all([
     usersPromise,
     isPupil ? safeFetch(["schools", schoolId, "memberships"], [memberConstraint]) : safeFetch(["schools", schoolId, "memberships"]),
@@ -1127,7 +1168,6 @@ export async function loadAppData(profile) {
     isPupil ? safeFetch(["schools", schoolId, "feedbackRecords"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackRecords"]),
     isPupil ? safeFetch(["schools", schoolId, "feedbackActions"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackActions"]),
     isPupil ? Promise.resolve([]) : safeFetch(["schools", schoolId, "interventions"]),
-    isPupil ? safeFetch(["schools", schoolId, "feedbackSessions"], [where("pupilIds", "array-contains", pupilUid)]) : safeFetch(["schools", schoolId, "feedbackSessions"]),
     isPupil ? safeFetch(["schools", schoolId, "improvementBank"], [pupilConstraint]) : safeFetch(["schools", schoolId, "improvementBank"]),
     isPupil ? Promise.resolve([]) : safeFetch(["schools", schoolId, "riskOverrides"]),
     profileAccess.roles.schoolAdmin
@@ -1137,6 +1177,10 @@ export async function loadAppData(profile) {
         : Promise.resolve([]),
     profileAccess.roles.schoolAdmin ? safeFetch(["schools", schoolId, "auditLogs"]) : Promise.resolve([])
   ]);
+
+  const feedbackSessions = isPupil
+    ? await fetchPupilFeedbackSessions(schoolId, pupilUid, classes, memberships)
+    : await safeFetch(["schools", schoolId, "feedbackSessions"]);
 
   const scopedUsers = staff
     ? await Promise.all(users.map(async (user) => {

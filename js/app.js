@@ -1942,9 +1942,14 @@ app.addEventListener("click", async (event) => {
   if (action === "refresh-feedback-session-pupils") {
     const session = byId(state.data.feedbackSessions, id);
     if (!session) return toast("Feedback session not found.", "error");
+    const cls = byId(state.data.classes, session.classId);
     const pupilIds = activePupilIdsForClass(session.classId);
+    const openFeedbackSessionIds = unique([...(cls?.openFeedbackSessionIds || []), session.id]);
     await withBusy(actionEl, async()=>{
-      await updateSchoolEntity(state.profile.schoolId, "feedbackSessions", id, { pupilIds, rosterRefreshedAt: new Date().toISOString(), rosterRefreshedBy: state.profile.id });
+      await Promise.all([
+        updateSchoolEntity(state.profile.schoolId, "feedbackSessions", id, { pupilIds, rosterRefreshedAt: new Date().toISOString(), rosterRefreshedBy: state.profile.id }),
+        cls ? updateSchoolEntity(state.profile.schoolId, "classes", cls.id, { openFeedbackSessionIds }) : Promise.resolve()
+      ]);
       await refresh();
       toast(`Session refreshed for ${pupilIds.length} pupil${pupilIds.length === 1 ? "" : "s"}.`);
     });
@@ -1954,9 +1959,17 @@ app.addEventListener("click", async (event) => {
     const status = action === "close-feedback-session" ? "closed" : action === "reopen-feedback-session" ? "open" : "archived";
     await withBusy(actionEl, async()=>{
       const session = byId(state.data.feedbackSessions, id);
+      const cls = session ? byId(state.data.classes, session.classId) : null;
       const changes = { status, statusChangedAt: new Date().toISOString(), statusChangedBy: state.profile.id };
       if (status === "open" && session) changes.pupilIds = activePupilIdsForClass(session.classId);
-      await updateSchoolEntity(state.profile.schoolId, "feedbackSessions", id, changes);
+      const currentLinks = cls?.openFeedbackSessionIds || [];
+      const openFeedbackSessionIds = status === "open"
+        ? unique([...currentLinks, id])
+        : currentLinks.filter((sessionId) => sessionId !== id);
+      await Promise.all([
+        updateSchoolEntity(state.profile.schoolId, "feedbackSessions", id, changes),
+        cls ? updateSchoolEntity(state.profile.schoolId, "classes", cls.id, { openFeedbackSessionIds }) : Promise.resolve()
+      ]);
       closeModal();await refresh();toast(status === "open" ? "Feedback session reopened and the current class list was refreshed." : status === "closed" ? "Feedback session closed to new starters." : "Feedback session archived.");
     }); return;
   }
@@ -2194,7 +2207,8 @@ app.addEventListener("submit", async (event) => {
       case "start-feedback-session": {
         const cls = byId(classesVisibleToProfile(), data.classId);
         if (!cls) throw new Error("Choose one of your classes.");
-        await createSchoolEntity(state.profile.schoolId, "feedbackSessions", { classId: cls.id, subjectId: cls.subjectId, pupilIds: activePupilIdsForClass(cls.id), title: data.title.trim(), skill: data.skill.trim(), feedbackType: data.feedbackType, assessmentComponent: data.assessmentComponent?.trim() || "", instructions: data.instructions?.trim() || "", date: data.date || todayInput(), status: "open", createdBy: state.profile.id, createdByName: state.profile.displayName });
+        const session = await createSchoolEntity(state.profile.schoolId, "feedbackSessions", { classId: cls.id, subjectId: cls.subjectId, pupilIds: activePupilIdsForClass(cls.id), title: data.title.trim(), skill: data.skill.trim(), feedbackType: data.feedbackType, assessmentComponent: data.assessmentComponent?.trim() || "", instructions: data.instructions?.trim() || "", date: data.date || todayInput(), status: "open", createdBy: state.profile.id, createdByName: state.profile.displayName });
+        await updateSchoolEntity(state.profile.schoolId, "classes", cls.id, { openFeedbackSessionIds: unique([...(cls.openFeedbackSessionIds || []), session.id]) });
         closeModal(); await refresh(); toast("Live feedback session started."); break;
       }
       case "manage-improvement": {

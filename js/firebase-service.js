@@ -176,7 +176,13 @@ export async function signInWithGoogle() {
 export async function resetPassword(email) {
   if (isDemoMode) return;
   await firebaseReady;
-  await sendPasswordResetEmail(auth, email);
+  await sendPasswordResetEmail(auth, email, { url: appSettings.publicAppUrl });
+}
+
+export async function sendPupilPasswordReset(email) {
+  const address = String(email || "").trim();
+  if (!address) throw new Error("This pupil does not have an email address recorded.");
+  return resetPassword(address);
 }
 
 export async function signOut() {
@@ -188,13 +194,95 @@ export async function signOut() {
   await firebaseSignOut(auth);
 }
 
-export async function registerWithInvite({ displayName, email, password, inviteCode }) {
-  const code = inviteCode.trim();
+async function loadInvite(inviteCode) {
+  const code = String(inviteCode || "").trim();
   const schoolId = code.split("~")[0];
   if (!schoolId || !code.includes("~")) throw new Error("That invitation code is not in the expected format.");
+  const inviteRef = findSchoolDocPath(schoolId, "invites", code);
+  const inviteSnap = await getDoc(inviteRef);
+  if (!inviteSnap.exists() || inviteSnap.data().active !== true) throw new Error("That invitation code is not active.");
+  return { code, schoolId, invite: inviteSnap.data() };
+}
 
+function providerName(user, fallback = "password") {
+  if (user?.providerData?.some((item) => item.providerId === "google.com")) return "google";
+  return fallback;
+}
+
+async function completeInviteProfile(user, { displayName, inviteCode, authProvider = "password" }) {
+  const realName = String(displayName || user?.displayName || "").trim();
+  if (!realName) throw new Error("Enter the pupil or staff member's real full name.");
+  const { code, schoolId, invite } = await loadInvite(inviteCode);
+  const email = String(user?.email || "").trim();
+  if (!email) throw new Error("This account does not have an email address.");
+  if (invite.emailRestriction && invite.emailRestriction.toLowerCase() !== email.toLowerCase()) {
+    throw new Error("This invitation was issued for a different email address.");
+  }
+  const existingProfile = await getDoc(doc(db, "users", user.uid));
+  if (existingProfile.exists()) throw new Error("This account already has a FeedbackLoop profile. Use Sign in instead.");
+
+  await updateProfile(user, { displayName: realName });
+  const batch = writeBatch(db);
+  const departments = invite.departmentIds || [];
+  const profile = {
+    displayName: realName,
+    email,
+    role: invite.role,
+    schoolId,
+    departmentIds: departments,
+    learnerId: invite.role === "pupil" ? learnerId() : null,
+    schoolHistoryIds: invite.role === "pupil" ? [schoolId] : [],
+    workspaceIds: [schoolId],
+    workspaceOwner: false,
+    authProvider,
+    active: true,
+    inviteCode: code,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  };
+  batch.set(doc(db, "users", user.uid), profile);
+  batch.set(doc(db, "users", user.uid, "workspaces", schoolId), {
+    uid: user.uid,
+    schoolId,
+    role: invite.role,
+    departmentIds: departments,
+    workspaceOwner: false,
+    authProvider,
+    inviteCode: code,
+    active: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+  if (invite.role === "pupil") {
+    for (const classId of invite.classIds || []) {
+      const membershipRef = doc(collection(db, "schools", schoolId, "memberships"));
+      batch.set(membershipRef, {
+        userId: user.uid,
+        classId,
+        subjectId: invite.subjectId || "",
+        targetGrade: "",
+        currentGrade: "",
+        active: true,
+        inviteCode: code,
+        createdAt: serverTimestamp()
+      });
+    }
+  }
+  await batch.commit();
+  if (authProvider === "password" && !user.emailVerified) {
+    try {
+      await sendEmailVerification(user, { url: appSettings.publicAppUrl });
+    } catch (error) {
+      console.warn("Profile created, but the verification email could not be sent.", error);
+    }
+  }
+  return user;
+}
+
+export async function registerWithInvite({ displayName, email, password, inviteCode }) {
   if (isDemoMode) {
     const state = getDemoState();
+    const code = String(inviteCode || "").trim();
     const invite = state.invites.find((item) => item.id === code && item.active);
     if (!invite) throw new Error("That invitation code is not active.");
     const id = randomId("demo-");
@@ -207,6 +295,8 @@ export async function registerWithInvite({ displayName, email, password, inviteC
       departmentIds: invite.departmentIds || [],
       learnerId: invite.role === "pupil" ? learnerId() : null,
       schoolHistoryIds: invite.role === "pupil" ? [invite.schoolId] : [],
+      workspaceIds: [invite.schoolId],
+      authProvider: "password",
       active: true,
       inviteCode: code
     };
@@ -214,15 +304,7 @@ export async function registerWithInvite({ displayName, email, password, inviteC
     if (invite.role === "pupil") {
       for (const classId of invite.classIds || []) {
         const cls = state.classes.find((c) => c.id === classId);
-        state.memberships.push({
-          id: randomId("m-"),
-          userId: id,
-          classId,
-          subjectId: cls?.subjectId || "",
-          targetGrade: "",
-          currentGrade: "",
-          active: true
-        });
+        state.memberships.push({ id: randomId("m-"), userId: id, classId, subjectId: cls?.subjectId || "", targetGrade: "", currentGrade: "", active: true });
       }
     }
     saveDemoState(state);
@@ -231,88 +313,185 @@ export async function registerWithInvite({ displayName, email, password, inviteC
   }
 
   await firebaseReady;
-  const inviteRef = findSchoolDocPath(schoolId, "invites", code);
-  const inviteSnap = await getDoc(inviteRef);
-  if (!inviteSnap.exists() || inviteSnap.data().active !== true) throw new Error("That invitation code is not active.");
-  const invite = inviteSnap.data();
-  if (invite.emailRestriction && invite.emailRestriction.toLowerCase() !== email.toLowerCase()) {
-    throw new Error("This invitation was issued for a different email address.");
-  }
-
   let result;
   let createdNow = false;
   try {
     result = await createUserWithEmailAndPassword(auth, email, password);
     createdNow = true;
   } catch (error) {
-    // A previous failed Firestore profile write can leave the Firebase Auth
-    // account behind. Let that person sign in with the same password and
-    // finish redeeming the invitation instead of forcing an administrator to
-    // delete the account manually.
     if (error?.code !== "auth/email-already-in-use") throw error;
     result = await signInWithEmailAndPassword(auth, email, password);
-    const existingProfile = await getDoc(doc(db, "users", result.user.uid));
-    if (existingProfile.exists()) {
-      throw new Error("This account already has a FeedbackLoop profile. Use Sign in instead.");
-    }
-  }
-
-  await updateProfile(result.user, { displayName });
-  const batch = writeBatch(db);
-  const profile = {
-    displayName,
-    email,
-    role: invite.role,
-    schoolId,
-    departmentIds: invite.departmentIds || [],
-    learnerId: invite.role === "pupil" ? learnerId() : null,
-    schoolHistoryIds: invite.role === "pupil" ? [schoolId] : [],
-    active: true,
-    inviteCode: code,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  };
-  batch.set(doc(db, "users", result.user.uid), profile);
-  if (invite.role === "pupil") {
-    for (const classId of invite.classIds || []) {
-      const membershipRef = doc(collection(db, "schools", schoolId, "memberships"));
-      batch.set(membershipRef, {
-        userId: result.user.uid,
-        classId,
-        subjectId: invite.subjectId || "",
-        targetGrade: "",
-        currentGrade: "",
-        active: true,
-        inviteCode: code,
-        createdAt: serverTimestamp()
-      });
-    }
   }
   try {
-    await batch.commit();
+    return await completeInviteProfile(result.user, { displayName, inviteCode, authProvider: "password" });
   } catch (error) {
-    // Authentication and Firestore are separate services. If this function
-    // created the Auth account but Firestore rejected the profile batch,
-    // remove the new Auth account so the person can retry cleanly.
     if (createdNow) {
-      try {
-        await deleteUser(result.user);
-      } catch (cleanupError) {
-        console.warn("Could not remove incomplete Firebase Auth account.", cleanupError);
-      }
+      try { await deleteUser(result.user); } catch (cleanupError) { console.warn("Could not remove incomplete Firebase Auth account.", cleanupError); }
     }
     throw error;
   }
-  // Account creation and the Firestore school profile are already complete at
-  // this point. Use Firebase's default verification handler so a missing
-  // continue-URL allowlist entry cannot leave the app on a misleading
-  // "Account needs a school profile" screen.
+}
+
+export async function registerWithInviteGoogle({ displayName, inviteCode }) {
+  if (isDemoMode) return registerWithInvite({ displayName, email: "pupil@example.com", password: "demo-password", inviteCode });
+  await firebaseReady;
+  const user = await signInWithGoogle();
+  return completeInviteProfile(user, { displayName: displayName || user.displayName, inviteCode, authProvider: "google" });
+}
+
+async function createIndependentWorkspaceForUser(user, { displayName, workspaceName, authProvider }) {
+  const realName = String(displayName || user?.displayName || "").trim();
+  if (!realName) throw new Error("Enter your real full name.");
+  const name = String(workspaceName || "").trim() || `${realName}'s Classes`;
+  const existingProfile = await getDoc(doc(db, "users", user.uid));
+  if (existingProfile.exists()) throw new Error("This account already has a FeedbackLoop profile. Use Sign in instead.");
+  const workspaceId = `personal-${user.uid}`;
+  const departmentId = "personal-department";
+  const subjectId = "personal-subject";
+  await updateProfile(user, { displayName: realName });
+  const batch = writeBatch(db);
+  batch.set(doc(db, "schools", workspaceId), {
+    name,
+    shortName: name,
+    active: true,
+    workspaceType: "individualTeacher",
+    ownerId: user.uid,
+    transferCode: "",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+  batch.set(doc(db, "users", user.uid), {
+    displayName: realName,
+    email: user.email || "",
+    role: "teacher",
+    schoolId: workspaceId,
+    departmentIds: [departmentId],
+    learnerId: null,
+    schoolHistoryIds: [],
+    workspaceIds: [workspaceId],
+    workspaceOwner: true,
+    authProvider,
+    active: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+  batch.set(doc(db, "users", user.uid, "workspaces", workspaceId), {
+    uid: user.uid,
+    schoolId: workspaceId,
+    role: "teacher",
+    departmentIds: [departmentId],
+    workspaceOwner: true,
+    authProvider,
+    active: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+  await batch.commit();
   try {
-    await sendEmailVerification(result.user);
+    const setupBatch = writeBatch(db);
+    setupBatch.set(doc(db, "schools", workspaceId, "departments", departmentId), {
+      name: "My subjects",
+      headIds: [user.uid],
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    setupBatch.set(doc(db, "schools", workspaceId, "subjects", subjectId), {
+      name: "General subject",
+      departmentId,
+      gradeScale: "A1–D8",
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    });
+    await setupBatch.commit();
   } catch (error) {
-    console.warn("Account created, but the verification email could not be sent.", error);
+    console.warn("Teacher workspace was created without the starter subject. It can be added from My classes.", error);
   }
-  return result.user;
+  if (authProvider === "password" && !user.emailVerified) {
+    try { await sendEmailVerification(user, { url: appSettings.publicAppUrl }); }
+    catch (error) { console.warn("Workspace created, but the verification email could not be sent.", error); }
+  }
+  return user;
+}
+
+export async function registerIndependentTeacher({ displayName, workspaceName, email, password }) {
+  if (isDemoMode) return demoSignInAs("teacher");
+  await firebaseReady;
+  const result = await createUserWithEmailAndPassword(auth, email, password);
+  try {
+    return await createIndependentWorkspaceForUser(result.user, { displayName, workspaceName, authProvider: "password" });
+  } catch (error) {
+    try { await deleteUser(result.user); } catch (cleanupError) { console.warn("Could not remove incomplete teacher account.", cleanupError); }
+    throw error;
+  }
+}
+
+export async function registerIndependentTeacherGoogle({ workspaceName }) {
+  if (isDemoMode) return demoSignInAs("teacher");
+  await firebaseReady;
+  const user = await signInWithGoogle();
+  return createIndependentWorkspaceForUser(user, { displayName: user.displayName, workspaceName, authProvider: "google" });
+}
+
+export async function joinTeacherWorkspace(profile, inviteCode) {
+  if (isDemoMode) return profile;
+  await firebaseReady;
+  if (!profile || profile.role !== "teacher") throw new Error("Only a teacher account can join a department using this option.");
+  const { code, schoolId, invite } = await loadInvite(inviteCode);
+  if (invite.role !== "teacher") throw new Error("Enter a teacher department code.");
+  const workspaceRef = doc(db, "users", profile.id, "workspaces", schoolId);
+  const existing = await getDoc(workspaceRef);
+  if (existing.exists()) return switchWorkspace(profile, schoolId);
+  const batch = writeBatch(db);
+  batch.set(workspaceRef, {
+    uid: profile.id,
+    schoolId,
+    role: "teacher",
+    departmentIds: invite.departmentIds || [],
+    workspaceOwner: false,
+    authProvider: profile.authProvider || providerName(auth.currentUser),
+    inviteCode: code,
+    active: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+  batch.update(doc(db, "users", profile.id), {
+    schoolId,
+    role: "teacher",
+    departmentIds: invite.departmentIds || [],
+    workspaceOwner: false,
+    inviteCode: code,
+    workspaceIds: arrayUnion(schoolId),
+    updatedAt: serverTimestamp()
+  });
+  await batch.commit();
+  try {
+    await addDoc(collection(db, "schools", schoolId, "auditLogs"), {
+      action: "teacherJoinedWorkspace",
+      userId: profile.id,
+      userName: profile.displayName,
+      inviteCode: code,
+      createdAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.warn("School joined, but the audit entry could not be written.", error);
+  }
+  return getUserProfile(auth.currentUser);
+}
+
+export async function switchWorkspace(profile, schoolId) {
+  if (isDemoMode) return profile;
+  await firebaseReady;
+  const membershipSnap = await getDoc(doc(db, "users", profile.id, "workspaces", schoolId));
+  if (!membershipSnap.exists() || membershipSnap.data().active === false) throw new Error("You no longer have access to that workspace.");
+  const membership = membershipSnap.data();
+  await updateDoc(doc(db, "users", profile.id), {
+    schoolId,
+    role: membership.role,
+    departmentIds: membership.departmentIds || [],
+    workspaceOwner: membership.workspaceOwner === true,
+    updatedAt: serverTimestamp()
+  });
+  return getUserProfile(auth.currentUser);
 }
 
 export async function getUserProfile(user) {
@@ -322,6 +501,10 @@ export async function getUserProfile(user) {
   const snap = await getDoc(doc(db, "users", user.uid));
   if (!snap.exists()) return null;
   const profile = normaliseDoc(snap);
+  profile.workspaceIds = Array.isArray(profile.workspaceIds) && profile.workspaceIds.length
+    ? profile.workspaceIds
+    : [profile.schoolId].filter(Boolean);
+  profile.authProvider = profile.authProvider || providerName(user);
 
   if (user.email && profile.email !== user.email) {
     const q = query(
@@ -346,8 +529,10 @@ export async function loadAppData(profile) {
   if (isDemoMode) return clone(getDemoState());
   await firebaseReady;
   const schoolId = profile.schoolId;
-  const schoolSnap = await getDoc(doc(db, "schools", schoolId));
-  const school = schoolSnap.exists() ? normaliseDoc(schoolSnap) : { id: schoolId, name: "School" };
+  const workspaceIds = [...new Set([...(profile.workspaceIds || []), schoolId].filter(Boolean))];
+  const workspaceSnaps = await Promise.all(workspaceIds.map((id) => getDoc(doc(db, "schools", id))));
+  const workspaces = workspaceSnaps.filter((snap) => snap.exists()).map(normaliseDoc);
+  const school = workspaces.find((item) => item.id === schoolId) || { id: schoolId, name: "School" };
   const isPupil = profile.role === "pupil";
   const staff = ["schoolAdmin", "departmentHead", "teacher"].includes(profile.role);
 
@@ -359,8 +544,15 @@ export async function loadAppData(profile) {
 
   const pupilConstraint = where("pupilId", "==", profile.id);
   const memberConstraint = where("userId", "==", profile.id);
+  const usersPromise = staff
+    ? Promise.all([
+        safeFetch(["users"], [where("schoolId", "==", schoolId)]),
+        safeFetch(["users"], [where("workspaceIds", "array-contains", schoolId)])
+      ]).then(([activeUsers, workspaceUsers]) => [...activeUsers, ...workspaceUsers].filter((item, index, array) => array.findIndex((other) => other.id === item.id) === index))
+    : Promise.resolve([profile]);
+
   const [users, memberships, assessments, feedbackRecords, feedbackActions, interventions, invites] = await Promise.all([
-    staff ? safeFetch(["users"], [where("schoolId", "==", schoolId)]) : Promise.resolve([profile]),
+    usersPromise,
     isPupil ? safeFetch(["schools", schoolId, "memberships"], [memberConstraint]) : safeFetch(["schools", schoolId, "memberships"]),
     isPupil ? safeFetch(["schools", schoolId, "assessments"], [pupilConstraint]) : safeFetch(["schools", schoolId, "assessments"]),
     isPupil ? safeFetch(["schools", schoolId, "feedbackRecords"], [pupilConstraint]) : safeFetch(["schools", schoolId, "feedbackRecords"]),
@@ -372,6 +564,25 @@ export async function loadAppData(profile) {
         ? safeFetch(["schools", schoolId, "invites"], [where("createdBy", "==", profile.id)])
         : Promise.resolve([])
   ]);
+
+  const scopedUsers = staff
+    ? await Promise.all(users.map(async (user) => {
+        try {
+          const membershipSnap = await getDoc(doc(db, "users", user.id, "workspaces", schoolId));
+          if (!membershipSnap.exists()) return user;
+          const membership = membershipSnap.data();
+          return {
+            ...user,
+            role: membership.role || user.role,
+            departmentIds: membership.departmentIds || user.departmentIds || [],
+            workspaceOwner: membership.workspaceOwner === true,
+            authProvider: membership.authProvider || user.authProvider
+          };
+        } catch (error) {
+          return user;
+        }
+      }))
+    : users;
 
   const [transferFrom, transferTo, emailChangeRequests] = await Promise.all([
     safeFetch(["transferRequests"], [where("fromSchoolId", "==", schoolId)]),
@@ -385,9 +596,10 @@ export async function loadAppData(profile) {
 
   return {
     school,
+    workspaces,
     departments,
     subjects,
-    users,
+    users: scopedUsers,
     classes,
     memberships,
     assessments,

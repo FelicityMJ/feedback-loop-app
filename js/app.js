@@ -6,7 +6,13 @@ import {
   signIn,
   signInWithGoogle,
   registerWithInvite,
+  registerWithInviteGoogle,
+  registerIndependentTeacher,
+  registerIndependentTeacherGoogle,
+  joinTeacherWorkspace,
+  switchWorkspace,
   resetPassword,
+  sendPupilPasswordReset,
   signOut,
   getUserProfile,
   loadAppData,
@@ -449,7 +455,16 @@ function selectOptions(items, selected, label = "name") {
 
 function renderAuth() {
   state.loading = false;
-  const register = state.authTab === "register";
+  const tab = state.authTab;
+  const signin = tab === "signin";
+  const join = tab === "register";
+  const teacher = tab === "teacher";
+  const title = signin ? "Welcome back" : join ? "Join with a class or department code" : "Create an individual teacher workspace";
+  const intro = signin
+    ? "Sign in to open your personalised dashboard."
+    : join
+      ? "Pupils use a class code. Teachers use a department code. Use the real name shown on the class list."
+      : "Buy and use FeedbackLoop independently now, then connect the same account to a school department later.";
   app.innerHTML = `<div class="auth-shell">
     <section class="auth-art">
       <div class="brand-mark">FL</div>
@@ -457,33 +472,48 @@ function renderAuth() {
       <p>Track progress against targets, close feedback loops, revisit recurring mistakes and give teachers a clear picture of where support is needed.</p>
       <div class="auth-points">
         <div class="auth-point"><span>✓</span><div><strong>Pupil-owned progress</strong><br><span>Feedback, reflection and action stay connected.</span></div></div>
-        <div class="auth-point"><span>⌁</span><div><strong>Whole-class insight</strong><br><span>Teachers and department heads can act before pupils fall behind.</span></div></div>
-        <div class="auth-point"><span>⇄</span><div><strong>Portable learner profile</strong><br><span>Download or transfer records when a pupil moves school.</span></div></div>
+        <div class="auth-point"><span>⌁</span><div><strong>Whole-class insight</strong><br><span>Teachers can start independently and connect to a school later.</span></div></div>
+        <div class="auth-point"><span>⇄</span><div><strong>One continuing account</strong><br><span>Personal and school workspaces can sit under the same login.</span></div></div>
       </div>
     </section>
     <section class="auth-panel">
       <div class="auth-card">
-        <h2>${register ? "Create your account" : "Welcome back"}</h2>
-        <p>${register ? "Use the class or department code supplied to you." : "Sign in to open your personalised dashboard."}</p>
-        <div class="auth-tabs">
-          <button class="auth-tab ${!register ? "active" : ""}" data-auth-tab="signin">Sign in</button>
-          <button class="auth-tab ${register ? "active" : ""}" data-auth-tab="register">Join a school</button>
+        <h2>${title}</h2>
+        <p>${intro}</p>
+        <div class="auth-tabs auth-tabs-three">
+          <button class="auth-tab ${signin ? "active" : ""}" data-auth-tab="signin">Sign in</button>
+          <button class="auth-tab ${join ? "active" : ""}" data-auth-tab="register">Join with code</button>
+          <button class="auth-tab ${teacher ? "active" : ""}" data-auth-tab="teacher">Teacher account</button>
         </div>
-        ${register ? `
-          <form data-form="register">
-            <div class="field"><label>Full name</label><input name="displayName" autocomplete="name" required></div>
-            <div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div>
-            <div class="field"><label>Password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div>
-            <div class="field"><label>Class or department code</label><input name="inviteCode" placeholder="school-id~CODE" required><span class="field-help">Pupils receive a class code from their teacher. Teachers receive a department code from their department head. Department heads receive their code from the school administrator.</span></div>
-            <button class="btn btn-primary" type="submit">Create account</button>
-          </form>` : `
+        ${signin ? `
           <form data-form="signin">
             <div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div>
             <div class="field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div>
             <button class="btn btn-primary" type="submit">Sign in</button>
-            <button class="btn btn-ghost" type="button" data-action="google-signin">Sign in with Google</button>
+            <div class="auth-divider"><span>or</span></div>
+            <button class="btn btn-ghost" type="button" data-action="google-signin">Continue with Google</button>
           </form>
-          <div class="auth-links"><button class="link-btn" data-action="forgot-password">Forgot password?</button><span class="muted">School accounts only</span></div>`}
+          <div class="auth-links"><button class="link-btn" data-action="forgot-password">Forgot password?</button><span class="muted">For any email-and-password account</span></div>` : join ? `
+          <form data-form="register">
+            <div class="field"><label>Real full name</label><input name="displayName" autocomplete="name" required><span class="field-help">Use the name the teacher will recognise on the class list.</span></div>
+            <div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div>
+            <div class="field"><label>Password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div>
+            <div class="field"><label>Class or department code</label><input name="inviteCode" placeholder="workspace-id~CODE" required><span class="field-help">Pupils receive a class code from their teacher. Teachers receive a department code.</span></div>
+            <button class="btn btn-primary" type="submit">Create account</button>
+            <div class="auth-divider"><span>or</span></div>
+            <button class="btn btn-ghost" type="button" data-action="google-register-invite">Join using Google</button>
+            <span class="field-help">Using Google? Only the real full name and invitation code are needed.</span>
+          </form>` : `
+          <form data-form="independent-teacher">
+            <div class="field"><label>Your real full name</label><input name="displayName" autocomplete="name" required></div>
+            <div class="field"><label>Workspace name</label><input name="workspaceName" placeholder="For example: Mrs Miller's Computing Classes" required></div>
+            <div class="field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div>
+            <div class="field"><label>Password</label><input type="password" name="password" minlength="8" autocomplete="new-password" required></div>
+            <button class="btn btn-primary" type="submit">Create teacher workspace</button>
+            <div class="auth-divider"><span>or</span></div>
+            <button class="btn btn-ghost" type="button" data-action="google-register-teacher">Create using Google</button>
+            <span class="field-help">Using Google? Enter the workspace name; Google supplies your account name and email.</span>
+          </form>`}
         ${isDemoMode ? `<div class="demo-box"><strong>Preview the working dashboards</strong><div class="small muted">Firebase is not connected yet, so the app is running safely with example data.</div><div class="demo-roles">
           <button class="btn btn-secondary btn-sm" data-demo-role="pupil">Pupil view</button>
           <button class="btn btn-secondary btn-sm" data-demo-role="teacher">Teacher view</button>
@@ -506,6 +536,7 @@ function renderShell() {
         <div class="brand"><div class="brand-mark">FL</div><div class="brand-copy"><strong>FeedbackLoop</strong><span>${e(currentSchool().name)}</span></div></div>
         <div class="top-actions">
           ${isDemoMode ? `<select class="btn btn-ghost btn-sm" data-demo-switch aria-label="Switch demo role"><option value="pupil" ${profile.role === "pupil" ? "selected" : ""}>Pupil demo</option><option value="teacher" ${profile.role === "teacher" ? "selected" : ""}>Teacher demo</option><option value="departmentHead" ${profile.role === "departmentHead" ? "selected" : ""}>Department head demo</option><option value="schoolAdmin" ${profile.role === "schoolAdmin" ? "selected" : ""}>School admin demo</option></select>` : ""}
+          ${(state.data?.workspaces || []).length > 1 ? `<select class="btn btn-ghost btn-sm workspace-switcher" data-workspace-select aria-label="Switch workspace">${(state.data.workspaces || []).map((workspace) => `<option value="${e(workspace.id)}" ${workspace.id === profile.schoolId ? "selected" : ""}>${e(workspace.name)}</option>`).join("")}</select>` : ""}
           <div class="user-chip"><div class="avatar">${e(initials(profile.displayName))}</div><div class="user-details"><strong>${e(profile.displayName)}</strong><div class="small muted">${e(roleLabels[profile.role])}</div></div></div>
           <button class="icon-btn" data-action="signout" title="Sign out">↪</button>
         </div>
@@ -689,7 +720,9 @@ function skillCountsForClasses(classes) {
 
 function renderTeacherClasses() {
   const classes = classesVisibleToProfile();
-  return `<div class="page-head"><div><h1>My classes</h1><p>Create classes, check membership and use a pupil invitation code for straightforward enrolment.</p></div><div class="page-actions"><button class="btn btn-primary" data-action="add-class">Add class</button></div></div>
+  const personalWorkspace = currentSchool().workspaceType === "individualTeacher";
+  return `<div class="page-head"><div><h1>My classes</h1><p>Create classes, check membership and use a pupil invitation code for straightforward enrolment.</p></div><div class="page-actions">${personalWorkspace ? `<button class="btn btn-ghost" data-action="add-department">Add department</button><button class="btn btn-ghost" data-action="add-subject">Add subject</button><button class="btn btn-secondary" data-action="join-school-workspace">Link to a school</button>` : ""}<button class="btn btn-primary" data-action="add-class">Add class</button></div></div>
+    ${personalWorkspace ? `<div class="alert alert-info" style="margin-bottom:18px"><strong>Individual teacher workspace.</strong> You have full classroom access here. When a school adopts FeedbackLoop, use a teacher department code to add that school as another workspace without creating a new account.</div>` : ""}
     <div class="grid grid-3">${classes.map((cls) => `<section class="card card-pad"><div class="timeline-meta">${badge(cls.targetQualification || "Course")}</div><h3>${e(cls.name)}</h3><p class="muted">${e(getSubjectName(cls.subjectId))} · ${e(cls.academicYear || "")}</p><div class="grid grid-2"><div><strong>${pupilsForClass(cls.id).length}</strong><div class="small muted">Pupils</div></div><div><strong>${classAverage(cls.id)}%</strong><div class="small muted">Average</div></div></div><div class="form-actions"><button class="btn btn-ghost btn-sm" data-action="select-class" data-id="${cls.id}">Open class</button><button class="btn btn-secondary btn-sm" data-action="class-invite" data-id="${cls.id}">Pupil code</button></div></section>`).join("") || `<div class="card empty span-3">No classes yet.</div>`}</div>
     ${teacherSelectedClass() ? `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>${e(teacherSelectedClass().name)} pupil list</h3></div></div>${classSnapshotTable(teacherSelectedClass())}</section>` : ""}
     <section class="card" style="margin-top:18px"><div class="card-head"><div><h3>Pupil class codes</h3><p>Each code adds pupils only to its named class. Copy an existing code or disable it when enrolment is complete.</p></div></div>${inviteCodeTable((state.data.invites || []).filter((invite) => invite.role === "pupil"))}</section>`;
@@ -826,10 +859,15 @@ function modalAddSubject() {
   openModal("Add subject", `<form data-form="add-subject" class="form-grid"><div class="field"><label>Subject name</label><input name="name" required></div><div class="field"><label>Department</label><select name="departmentId" required>${selectOptions(state.data.departments, "")}</select></div><div class="field"><label>Grade scale</label><select name="gradeScale"><option>A1–D8</option><option>Percentage</option><option>Pass/Fail</option></select></div><div class="form-actions full"><button class="btn btn-primary">Add subject</button></div></form>`);
 }
 
+function modalJoinSchoolWorkspace() {
+  openModal("Link this account to a school", `<form data-form="join-school-workspace"><div class="field"><label>Teacher department code</label><input name="inviteCode" placeholder="school-id~CODE" required><span class="field-help">Your department head supplies this code. Your individual workspace remains available and you will be able to switch between both.</span></div><div class="form-actions"><button class="btn btn-primary">Join department</button></div></form>`);
+}
+
 function modalAddClass() {
-  const departmentIds = state.profile.role === "schoolAdmin" ? state.data.departments.map((department) => department.id) : (state.profile.departmentIds || []);
+  const departmentIds = state.profile.role === "schoolAdmin" || currentSchool().workspaceType === "individualTeacher" ? state.data.departments.map((department) => department.id) : (state.profile.departmentIds || []);
   const subjects = state.data.subjects.filter((subject) => departmentIds.includes(subject.departmentId));
-  const teachers = state.data.users.filter((user) => user.role === "teacher" && (user.departmentIds || []).some((id) => departmentIds.includes(id)));
+  const personalWorkspace = currentSchool().workspaceType === "individualTeacher";
+  const teachers = state.data.users.filter((user) => user.role === "teacher" && (personalWorkspace && user.id === state.profile.id || (user.departmentIds || []).some((id) => departmentIds.includes(id))));
   if (!subjects.length) return toast("Create or join a department with at least one subject first.", "error");
   openModal("Add class", `<form data-form="add-class" class="form-grid"><div class="field"><label>Class name</label><input name="name" required placeholder="4A Computing"></div><div class="field"><label>Subject</label><select name="subjectId" required>${selectOptions(subjects, "")}</select></div><div class="field"><label>Lead teacher</label><select name="teacherId"><option value="">Not assigned</option>${selectOptions(teachers, state.profile.role==="teacher"?state.profile.id:"", "displayName")}</select></div><div class="field"><label>Academic year</label><input name="academicYear" value="2026/27"></div><div class="field"><label>Qualification</label><input name="targetQualification" placeholder="National 5"></div><div class="form-actions full"><button class="btn btn-primary">Create class</button></div></form>`);
 }
@@ -1165,7 +1203,7 @@ function modalPupilDashboard(pupilId) {
     const list = state.data.assessments.filter((assessment) => assessment.pupilId === pupilId && assessment.subjectId === subjectId && officialAssessment(assessment));
     const average = assessmentAverage(pupilId, { subjectId });
     return `<section style="margin-top:20px"><div class="card-head"><div><h3>${e(getSubjectName(subjectId))}</h3><p>Average ${average.count ? `${formatPercent(average.percentage)} · ${e(average.grade)}` : "not yet available"}</p></div>${badge(`Target ${membership.targetGrade || "—"}`)}</div><div class="chart-wrap">${gradeChartSvg(list, membership.targetGrade)}</div></section>`;
-  }).join("")}<div class="grid grid-2"><section><h3>Recurring themes</h3>${recurring.length ? miniBarSvg(recurring, "count", "skill") : `<p class="muted">No repeated feedback theme yet.</p>`}</section><section><h3>Current feedback</h3><div class="timeline">${feedback.slice(0, 5).map(feedbackTimelineItem).join("")}</div></section></div><div class="form-actions"><button class="btn btn-ghost" data-action="set-target" data-id="${pupilId}">Set target grade</button><button class="btn btn-secondary" data-action="add-intervention" data-id="${pupilId}">Add intervention</button></div>`);
+  }).join("")}<div class="grid grid-2"><section><h3>Recurring themes</h3>${recurring.length ? miniBarSvg(recurring, "count", "skill") : `<p class="muted">No repeated feedback theme yet.</p>`}</section><section><h3>Current feedback</h3><div class="timeline">${feedback.slice(0, 5).map(feedbackTimelineItem).join("")}</div></section></div><div class="form-actions"><button class="btn btn-ghost" data-action="set-target" data-id="${pupilId}">Set target grade</button><button class="btn btn-secondary" data-action="add-intervention" data-id="${pupilId}">Add intervention</button>${pupil.authProvider === "google" ? `<span class="badge badge-blue">Uses Google sign-in</span>` : `<button class="btn btn-ghost" data-action="reset-pupil-password" data-id="${pupilId}" data-email="${e(pupil.email)}">Send password reset</button>`}</div>`);
 }
 
 function skillCountsForPupil(pupilId) {
@@ -1399,10 +1437,31 @@ app.addEventListener("click", async (event) => {
   }
   if (action === "signout") { state.feedbackUnsubscribe?.(); state.feedbackUnsubscribe=null; await signOut(); state.authUser=null;state.profile=null;state.data=null;renderAuth(); return; }
   if (action === "google-signin") { await withBusy(actionEl, async()=>{const user=await signInWithGoogle();await initialiseUser(user);}); return; }
+  if (action === "google-register-invite") {
+    const form = actionEl.closest("form[data-form=register]");
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (!data.displayName || !data.inviteCode) return toast("Enter the real full name and invitation code first.", "error");
+    await withBusy(actionEl, async()=>{const user=await registerWithInviteGoogle(data);await initialiseUser(user);toast("Account created using Google.");}); return;
+  }
+  if (action === "google-register-teacher") {
+    const form = actionEl.closest("form[data-form=independent-teacher]");
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (!data.workspaceName) return toast("Enter a workspace name first.", "error");
+    await withBusy(actionEl, async()=>{const user=await registerIndependentTeacherGoogle(data);await initialiseUser(user);toast("Teacher workspace created.");}); return;
+  }
   if (action === "forgot-password") {
     const email = prompt("Enter the email address for the account:");
     if (email) await withBusy(actionEl, async()=>{await resetPassword(email);toast("Password reset email sent.");});
     return;
+  }
+  if (action === "join-school-workspace") return modalJoinSchoolWorkspace();
+  if (action === "reset-pupil-password") {
+    const pupil = byId(state.data.users, id);
+    if (!pupil) return toast("Pupil account not found.", "error");
+    if (pupil.authProvider === "google") return toast("This pupil signs in through Google and does not have a FeedbackLoop password.", "error");
+    const ok = confirm(`Send a secure password-reset email to ${pupil.displayName} at ${pupil.email}?`);
+    if (!ok) return;
+    await withBusy(actionEl, async()=>{await sendPupilPasswordReset(pupil.email);toast("Password-reset email sent to the pupil.");}); return;
   }
   if (action === "add-department") return modalAddDepartment();
   if (action === "add-subject") return modalAddSubject();
@@ -1470,6 +1529,11 @@ app.addEventListener("change", async (event) => {
   if (event.target.matches("[data-demo-switch]")) {
     const user=await demoSignInAs(event.target.value); await initialiseUser(user); return;
   }
+  if (event.target.matches("[data-workspace-select]")) {
+    const select = event.target;
+    await withBusy(select, async()=>{await switchWorkspace(state.profile, select.value);await initialiseUser(state.authUser);toast("Workspace changed.");});
+    return;
+  }
   if (event.target.matches("[data-subject-select]")) { state.selectedSubjectId=event.target.value; renderShell(); return; }
   if (event.target.matches("[data-class-select]")) { state.selectedClassId=event.target.value; renderShell(); return; }
   if (event.target.matches("[data-form-class]")) {
@@ -1503,7 +1567,9 @@ app.addEventListener("submit", async (event) => {
         break;
       }
       case "signin": { const user=await signIn(data.email,data.password); await initialiseUser(user); break; }
-      case "register": { const user=await registerWithInvite(data); await initialiseUser(user); toast("Account created. Check your email for a verification link."); break; }
+      case "register": { const user=await registerWithInvite(data); await initialiseUser(user); toast("Account created. Check your email for a verification link if requested."); break; }
+      case "independent-teacher": { const user=await registerIndependentTeacher(data); await initialiseUser(user); toast("Individual teacher workspace created."); break; }
+      case "join-school-workspace": { await joinTeacherWorkspace(state.profile, data.inviteCode); closeModal(); await initialiseUser(state.authUser); toast("School department added to your account."); break; }
       case "add-department": await createSchoolEntity(state.profile.schoolId,"departments",{name:data.name,headIds:[]}); closeModal(); await refresh(); toast("Department added."); break;
       case "add-subject": await createSchoolEntity(state.profile.schoolId,"subjects",{name:data.name,departmentId:data.departmentId,gradeScale:data.gradeScale}); closeModal(); await refresh(); toast("Subject added."); break;
       case "add-class": {
@@ -1586,7 +1652,7 @@ async function initialiseUser(user) {
     const profile=await getUserProfile(user);
     if(!profile){
       state.profile=null;state.data=null;
-      app.innerHTML=`<div class="loading"><div class="card card-pad" style="max-width:600px"><h2>Account needs a school profile</h2><p>Your Firebase sign-in exists, but no FeedbackLoop user document has been created. Sign out and use the class or department code supplied to you, or complete the one-time administrator setup in the supplied guide.</p><button class="btn btn-primary" data-action="signout">Sign out</button></div></div>`;
+      app.innerHTML=`<div class="loading"><div class="card card-pad" style="max-width:650px"><h2>Finish setting up your FeedbackLoop account</h2><p>This Google or email login exists, but it has not yet been connected to a FeedbackLoop workspace.</p><p>Sign out, then choose <strong>Join with code</strong> for a pupil or school staff account, or <strong>Teacher account</strong> to create an independent workspace.</p><button class="btn btn-primary" data-action="signout">Sign out and choose setup</button></div></div>`;
       return;
     }
     state.profile=profile;

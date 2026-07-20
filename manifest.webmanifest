@@ -1,6 +1,6 @@
 {
-  "name": "FeedbackLoop",
-  "short_name": "FeedbackLoop",
+  "name": "Feedback Steps",
+  "short_name": "Feedback Steps",
   "description": "School feedback, pupil reflection and progress tracking.",
   "start_url": "./",
   "display": "standalone",

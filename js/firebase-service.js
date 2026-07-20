@@ -47,6 +47,19 @@ const makeUuid = () => {
 };
 const randomId = (prefix = "") => `${prefix}${makeUuid().replaceAll("-", "").slice(0, 12)}`;
 const learnerId = () => `L-${makeUuid().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
+const inviteCodeAlphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+const makeInviteCode = (length) => {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((value) => inviteCodeAlphabet[value % inviteCodeAlphabet.length]).join("");
+};
+const normaliseInviteCode = (value) => {
+  const raw = String(value || "").trim();
+  // Legacy V6.3 codes contain the workspace id before a tilde. Preserve them
+  // exactly so every existing class and staff code continues to work.
+  if (raw.includes("~")) return raw;
+  return raw.toUpperCase().replace(/[\s-]+/g, "");
+};
 const normaliseValue = (value) => {
   if (!value) return value;
   if (typeof value?.toDate === "function") return value.toDate().toISOString();
@@ -302,19 +315,38 @@ export async function signOut() {
 }
 
 async function loadInvite(inviteCode) {
-  const code = String(inviteCode || "").trim();
-  const schoolId = code.split("~")[0];
-  if (!schoolId || !code.includes("~")) throw new Error("That invitation code is not in the expected format.");
-  const inviteRef = findSchoolDocPath(schoolId, "invites", code);
+  const enteredCode = normaliseInviteCode(inviteCode);
+  if (!enteredCode) throw new Error("Enter the class or staff code.");
+
+  let schoolId = "";
+  let inviteId = enteredCode;
+
+  if (enteredCode.includes("~")) {
+    // Backward compatibility for every code generated before V6.3.4.
+    schoolId = enteredCode.split("~")[0];
+    if (!schoolId) throw new Error("That invitation code is not in the expected format.");
+  } else {
+    if (!/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{6,8}$/.test(enteredCode)) {
+      throw new Error("Enter a valid 6-character class code or 8-character staff code.");
+    }
+    const locatorSnap = await getDoc(doc(db, "inviteCodes", enteredCode));
+    if (!locatorSnap.exists()) throw new Error("That invitation code was not recognised.");
+    const locator = locatorSnap.data();
+    schoolId = locator.schoolId || "";
+    inviteId = locator.inviteId || enteredCode;
+    if (!schoolId || !inviteId) throw new Error("That invitation code is incomplete.");
+  }
+
+  const inviteRef = findSchoolDocPath(schoolId, "invites", inviteId);
   const inviteSnap = await getDoc(inviteRef);
   if (!inviteSnap.exists() || inviteSnap.data().active !== true) throw new Error("That invitation code is not active.");
-  return { code, schoolId, invite: inviteSnap.data() };
+  return { code: inviteId, schoolId, invite: inviteSnap.data() };
 }
 
 export async function previewPupilClassInvite(inviteCode) {
   if (isDemoMode) {
     const state = getDemoState();
-    const code = String(inviteCode || "").trim();
+    const code = normaliseInviteCode(inviteCode);
     const invite = state.invites.find((item) => item.id === code && item.active === true);
     if (!invite || invite.role !== "pupil") throw new Error("Enter an active pupil class code.");
     const cls = state.classes.find((item) => (invite.classIds || []).includes(item.id));
@@ -354,7 +386,7 @@ export async function joinPupilClass(profile, inviteCode) {
   if (!profile || !isPupilProfile(profile)) throw new Error("Only a pupil account can join a pupil class code.");
   if (isDemoMode) {
     const state = getDemoState();
-    const code = String(inviteCode || "").trim();
+    const code = normaliseInviteCode(inviteCode);
     const invite = state.invites.find((item) => item.id === code && item.active === true && item.role === "pupil");
     if (!invite) throw new Error("Enter an active pupil class code.");
     for (const classId of invite.classIds || []) {
@@ -538,7 +570,7 @@ async function completeInviteProfile(user, { displayName, inviteCode, authProvid
 export async function registerWithInvite({ displayName, email, password, inviteCode }) {
   if (isDemoMode) {
     const state = getDemoState();
-    const code = String(inviteCode || "").trim();
+    const code = normaliseInviteCode(inviteCode);
     const invite = state.invites.find((item) => item.id === code && item.active);
     if (!invite) throw new Error("That invitation code is not active.");
     const id = randomId("demo-");
@@ -1328,23 +1360,53 @@ export async function deleteSchoolEntity(schoolId, group, id) {
 }
 
 export async function createInvite(schoolId, data) {
-  const suffix = makeUuid().replaceAll("-", "").slice(0, 10).toUpperCase();
-  const code = `${schoolId}~${suffix}`;
-  const item = { id: code, schoolId, ...data, active: true, createdAt: new Date().toISOString() };
+  const codeLength = data.role === "pupil" ? 6 : 8;
+  const codeType = data.role === "pupil" ? "pupilClass" : "staff";
+
   if (isDemoMode) {
     const state = getDemoState();
+    let code = makeInviteCode(codeLength);
+    while (state.invites.some((invite) => invite.id === code)) code = makeInviteCode(codeLength);
+    const item = { id: code, schoolId, ...data, active: true, createdAt: new Date().toISOString() };
     state.invites.push(item);
     saveDemoState(state);
     return item;
   }
+
   await firebaseReady;
-  await setDoc(findSchoolDocPath(schoolId, "invites", code), {
-    schoolId,
-    ...data,
-    active: true,
-    createdAt: serverTimestamp()
-  });
-  return item;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const code = makeInviteCode(codeLength);
+    const inviteRef = findSchoolDocPath(schoolId, "invites", code);
+    const locatorRef = doc(db, "inviteCodes", code);
+    try {
+      await runTransaction(db, async (transaction) => {
+        const locatorSnap = await transaction.get(locatorRef);
+        if (locatorSnap.exists()) {
+          const collision = new Error("Code collision");
+          collision.code = "feedbacksteps/code-collision";
+          throw collision;
+        }
+        transaction.set(inviteRef, {
+          schoolId,
+          ...data,
+          active: true,
+          createdAt: serverTimestamp()
+        });
+        transaction.set(locatorRef, {
+          schoolId,
+          inviteId: code,
+          codeType,
+          createdBy: data.createdBy,
+          createdAt: serverTimestamp()
+        });
+      });
+      return { id: code, schoolId, ...data, active: true, createdAt: new Date().toISOString() };
+    } catch (error) {
+      if (error?.code === "feedbacksteps/code-collision") continue;
+      throw error;
+    }
+  }
+  throw new Error("A unique short code could not be generated. Please try again.");
 }
 
 export async function updateUserProfile(userId, changes) {

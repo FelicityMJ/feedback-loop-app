@@ -609,7 +609,7 @@ function renderAuth() {
       : "V6.3 pilot workspaces are invitation-only and require an activation code.";
   app.innerHTML = `<div class="auth-shell">
     <section class="auth-art">
-      <div class="brand-mark">FL</div>
+      <img class="brand-mark" src="./favicon.png" alt="Feedback Steps logo">
       <h1>Feedback<br>that moves<br>learning on.</h1>
       <p>Track progress against targets, close feedback loops, revisit recurring mistakes and give teachers a clear picture of where support is needed.</p>
       <div class="auth-points">
@@ -651,7 +651,7 @@ function renderShell() {
       ? `<div class="workspace-banner"><strong>Trial workspace</strong>${licence.trialEndsAt ? ` · ends ${dateFmt(licence.trialEndsAt)}` : ""}</div>`
       : licence.type === "complimentaryPilot" ? `<div class="workspace-banner"><strong>Complimentary pilot access</strong></div>` : "";
   app.innerHTML = `${isDemoMode ? `<div class="demo-banner">Demo mode: changes are saved only in this browser.</div>` : ""}${accessBanner}
-    <div class="shell"><header class="topbar"><div class="brand"><div class="brand-mark">FL</div><div class="brand-copy"><strong>FeedbackLoop</strong><span>${e(currentSchool().name)}</span></div></div><div class="top-actions">
+    <div class="shell"><header class="topbar"><div class="brand"><img class="brand-mark" src="./favicon.png" alt="Feedback Steps logo"><div class="brand-copy"><strong>Feedback Steps</strong><span>${e(currentSchool().name)}</span></div></div><div class="top-actions">
       ${isDemoMode ? `<select class="btn btn-ghost btn-sm" data-demo-switch aria-label="Switch demo account"><option value="pupil" ${isPupil(profile) ? "selected" : ""}>Pupil demo</option><option value="teacher">Teacher demo</option><option value="departmentHead">Head demo</option><option value="schoolAdmin">Admin demo</option></select>` : ""}
       ${(state.data?.workspaces || []).length > 1 ? `<select class="btn btn-ghost btn-sm workspace-switcher" data-workspace-select aria-label="Switch workspace">${(state.data.workspaces || []).map((workspace) => `<option value="${e(workspace.id)}" ${workspace.id === profile.schoolId ? "selected" : ""}>${e(workspace.name)}</option>`).join("")}</select>` : ""}
       <div class="user-chip"><div class="avatar">${e(initials(profile.displayName))}</div><div class="user-details"><strong>${e(profile.displayName)}</strong><div class="small muted">${e(roleSummary(profile))}</div></div></div><button class="icon-btn" data-action="signout" title="Sign out">↪</button>

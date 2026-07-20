@@ -51,13 +51,10 @@ a { color: inherit; }
 .brand-mark {
   width: 42px;
   height: 42px;
-  border-radius: 14px;
-  display: grid;
-  place-items: center;
-  font-weight: 900;
-  color: white;
-  background: linear-gradient(135deg, var(--primary), var(--violet));
-  box-shadow: 0 10px 24px rgba(49,87,213,.28);
+  border-radius: 12px;
+  display: block;
+  object-fit: contain;
+  background: transparent;
 }
 .brand-copy strong { display: block; font-size: 1rem; }
 .brand-copy span { display: block; font-size: .79rem; color: var(--muted); }

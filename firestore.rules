@@ -216,6 +216,46 @@ service cloud.firestore {
       return signedIn() && data.pupilId == request.auth.uid;
     }
 
+    function canCreateInvite(schoolId, data) {
+      return workspaceWritable(schoolId)
+        && data.createdBy == request.auth.uid
+        && (
+          (
+            isSchoolAdmin(schoolId)
+            && data.role == 'staff'
+            && data.scopeType == 'internalStaff'
+            && data.roles is map
+            && data.roles.pupil == false
+            && (data.roles.schoolAdmin || data.roles.departmentHead || data.roles.teacher)
+            && (!data.roles.departmentHead || data.roles.teacher)
+          )
+          || (
+            isDepartmentHead(schoolId)
+            && data.role == 'teacher'
+            && data.scopeType == 'department'
+            && data.departmentIds is list
+            && data.departmentIds.size() == 1
+            && headDepartmentsFor(schoolId).hasAny(data.departmentIds)
+          )
+          || (
+            isIndividualWorkspaceOwner(schoolId)
+            && data.role == 'teacher'
+            && data.scopeType == 'classTeacher'
+            && data.classIds is list
+            && data.classIds.size() == 1
+            && teachesClass(schoolId, data.classIds[0])
+          )
+          || (
+            isTeacher(schoolId)
+            && data.role == 'pupil'
+            && data.scopeType == 'class'
+            && data.classIds is list
+            && data.classIds.size() == 1
+            && teachesClass(schoolId, data.classIds[0])
+          )
+        );
+    }
+
     // Class membership documents use userId rather than pupilId. Keeping this
     // separate prevents pupil data queries from silently returning no classes.
     function ownsPupilMembership(data) {
@@ -330,6 +370,29 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/transferRequests/$(transferId)).data.pupilId == pupilId
         && get(/databases/$(database)/documents/transferRequests/$(transferId)).data.toSchoolId == toSchoolId
         && get(/databases/$(database)/documents/transferRequests/$(transferId)).data.status == 'accepted';
+    }
+
+    match /inviteCodes/{inviteCode} {
+      // A short code is only a locator. The full permission scope remains in
+      // the school invite document and is checked again when the code is used.
+      allow get: if true;
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+          'schoolId', 'inviteId', 'codeType', 'createdBy', 'createdAt'
+        ])
+        && request.resource.data.schoolId is string
+        && request.resource.data.inviteId == inviteCode
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.codeType in ['pupilClass', 'staff']
+        && existsAfter(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)/invites/$(inviteCode))
+        && getAfter(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)/invites/$(inviteCode)).data.active == true
+        && getAfter(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)/invites/$(inviteCode)).data.createdBy == request.auth.uid
+        && canCreateInvite(
+          request.resource.data.schoolId,
+          getAfter(/databases/$(database)/documents/schools/$(request.resource.data.schoolId)/invites/$(inviteCode)).data
+        );
+      allow update, delete: if false;
     }
 
     match /activationCodes/{code} {
@@ -769,43 +832,7 @@ service cloud.firestore {
         allow list: if isSchoolAdmin(schoolId)
           || (isStaff(schoolId) && resource.data.createdBy == request.auth.uid);
 
-        allow create: if workspaceWritable(schoolId)
-          && request.resource.data.createdBy == request.auth.uid
-          && (
-            (
-              isSchoolAdmin(schoolId)
-              && request.resource.data.role == 'staff'
-              && request.resource.data.scopeType == 'internalStaff'
-              && request.resource.data.roles is map
-              && request.resource.data.roles.pupil == false
-              && (request.resource.data.roles.schoolAdmin || request.resource.data.roles.departmentHead || request.resource.data.roles.teacher)
-              && (!request.resource.data.roles.departmentHead || request.resource.data.roles.teacher)
-            )
-            || (
-              isDepartmentHead(schoolId)
-              && request.resource.data.role == 'teacher'
-              && request.resource.data.scopeType == 'department'
-              && request.resource.data.departmentIds is list
-              && request.resource.data.departmentIds.size() == 1
-              && headDepartmentsFor(schoolId).hasAny(request.resource.data.departmentIds)
-            )
-            || (
-              isIndividualWorkspaceOwner(schoolId)
-              && request.resource.data.role == 'teacher'
-              && request.resource.data.scopeType == 'classTeacher'
-              && request.resource.data.classIds is list
-              && request.resource.data.classIds.size() == 1
-              && teachesClass(schoolId, request.resource.data.classIds[0])
-            )
-            || (
-              isTeacher(schoolId)
-              && request.resource.data.role == 'pupil'
-              && request.resource.data.scopeType == 'class'
-              && request.resource.data.classIds is list
-              && request.resource.data.classIds.size() == 1
-              && teachesClass(schoolId, request.resource.data.classIds[0])
-            )
-          );
+        allow create: if canCreateInvite(schoolId, request.resource.data);
 
         allow update: if workspaceWritable(schoolId)
           && (

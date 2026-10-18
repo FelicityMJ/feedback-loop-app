@@ -18,9 +18,15 @@
       {
         "source": "**/*.@(js|css|html)",
         "headers": [
-          { "key": "Cache-Control", "value": "no-cache" }
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
         ]
       }
     ]
+  },
+  "functions": {
+    "source": "functions"
   }
 }

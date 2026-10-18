@@ -20,7 +20,8 @@ import {
   completeClassMigration,
   switchWorkspace,
   resetPassword,
-  sendPupilPasswordReset,
+  setPupilTemporaryPassword,
+  completeTemporaryPasswordChange,
   signOut,
   getUserProfile,
   loadAppData,
@@ -181,7 +182,7 @@ const workspaceMutationActions = new Set([
   "decline-transfer", "complete-transfer", "move-class-to-school"
 ]);
 
-const nonWorkspaceForms = new Set(["signin", "register", "independent-teacher", "school-activation", "print-portfolio"]);
+const nonWorkspaceForms = new Set(["signin", "register", "independent-teacher", "school-activation", "print-portfolio", "force-password-change"]);
 
 function blockReadOnlyChange() {
   if (!state.profile || !workspaceIsReadOnly()) return false;
@@ -895,6 +896,40 @@ function teacherSelectedClass() {
 function classAverage(classId) {
   const items = (state.data.assessments || []).filter((a) => a.classId === classId);
   return items.length ? Math.round(items.reduce((sum, a) => sum + Number(a.percentage || 0), 0) / items.length) : 0;
+}
+
+function makeTemporaryPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = new Uint8Array(6);
+  crypto.getRandomValues(bytes);
+  const suffix = [...bytes].map((value) => alphabet[value % alphabet.length]).join("");
+  return `Temp-${suffix}`;
+}
+
+function modalSetTemporaryPassword(pupilId) {
+  const pupil = byId(state.data.users, pupilId);
+  if (!pupil) return toast("Pupil account not found.", "error");
+  if (pupil.authProvider === "google") return toast("This pupil signs in through Google and does not have a FeedbackLoop password.", "error");
+  const generated = makeTemporaryPassword();
+  openModal("Set temporary password", `<form data-form="set-temp-password" class="form-grid">
+    <input type="hidden" name="pupilId" value="${e(pupil.id)}">
+    <div class="field full"><label>Pupil</label><input value="${e(pupil.displayName)}" disabled></div>
+    <div class="field full"><label>Temporary password</label><input name="temporaryPassword" value="${e(generated)}" minlength="8" autocomplete="off" required><span class="field-help">Give this password to the pupil. They will be forced to choose a private new password immediately after signing in.</span></div>
+    <div class="alert alert-warning full"><strong>Temporary only.</strong> Do not use the same temporary password for several pupils.</div>
+    <div class="form-actions full"><button class="btn btn-primary">Set temporary password</button><button class="btn btn-ghost" type="button" data-action="copy-temp-password">Copy</button><button class="btn btn-ghost" type="button" data-action="close-modal">Cancel</button></div>
+  </form>`);
+}
+
+function renderForcedPasswordChange(profile) {
+  app.innerHTML = `<div class="auth-page"><div class="auth-shell" style="max-width:620px"><div class="auth-card">
+    <div class="brand-block"><h1>Choose a new password</h1><p>${e(profile.displayName)}, you signed in using a temporary password set by your teacher.</p></div>
+    <div class="alert alert-info"><strong>You must change it now.</strong> Your teacher will not see the new password you choose.</div>
+    <form data-form="force-password-change" class="form-grid">
+      <div class="field full"><label>New password</label><input type="password" name="newPassword" minlength="8" autocomplete="new-password" required><span class="field-help">Use at least 8 characters.</span></div>
+      <div class="field full"><label>Confirm new password</label><input type="password" name="confirmPassword" minlength="8" autocomplete="new-password" required></div>
+      <div class="form-actions full"><button class="btn btn-primary">Save my new password</button><button class="btn btn-ghost" type="button" data-action="signout">Sign out</button></div>
+    </form>
+  </div></div></div>`;
 }
 
 function classSnapshotTable(cls) {
@@ -1921,13 +1956,13 @@ app.addEventListener("click", async (event) => {
     if (!ok) return;
     await withBusy(actionEl, async()=>{const result = await completeClassMigration(state.profile, id);await refresh();toast(`Migration completed. The class history was copied and existing pupil accounts were reconnected automatically.`);state.selectedClassId = result.destinationClassId;}); return;
   }
-  if (action === "reset-pupil-password") {
-    const pupil = byId(state.data.users, id);
-    if (!pupil) return toast("Pupil account not found.", "error");
-    if (pupil.authProvider === "google") return toast("This pupil signs in through Google and does not have a FeedbackLoop password.", "error");
-    const ok = confirm(`Reset ${pupil.displayName}'s password?\n\nA secure link will be emailed to ${pupil.email}. The pupil chooses the new password, and you will never see it.`);
-    if (!ok) return;
-    await withBusy(actionEl, async()=>{await sendPupilPasswordReset(pupil.email);toast("Password-reset email sent to the pupil.");}); return;
+  if (action === "reset-pupil-password") return modalSetTemporaryPassword(id);
+  if (action === "copy-temp-password") {
+    const input = document.querySelector('form[data-form="set-temp-password"] input[name="temporaryPassword"]');
+    if (!input) return;
+    try { await navigator.clipboard.writeText(input.value); toast("Temporary password copied."); }
+    catch { input.select(); document.execCommand("copy"); toast("Temporary password copied."); }
+    return;
   }
   if (action === "add-department") return modalAddDepartment();
   if (action === "add-subject") return modalAddSubject();
@@ -2130,6 +2165,21 @@ app.addEventListener("submit", async (event) => {
       }
       case "print-portfolio": { const portfolio = await loadPupilPortfolio(state.profile); printPortfolioReport(state.profile, portfolio, data); closeModal(); break; }
       case "signin": { const user=await signIn(data.email,data.password); await initialiseUser(user); break; }
+      case "force-password-change": {
+        if (data.newPassword !== data.confirmPassword) throw new Error("The two new passwords do not match.");
+        await completeTemporaryPasswordChange(data.newPassword);
+        toast("Password changed. You can now use FeedbackLoop normally.");
+        await initialiseUser(state.authUser);
+        break;
+      }
+      case "set-temp-password": {
+        const pupil = byId(state.data.users, data.pupilId);
+        if (!pupil) throw new Error("Pupil account not found.");
+        await setPupilTemporaryPassword({ schoolId: state.profile.schoolId, pupilId: data.pupilId, temporaryPassword: data.temporaryPassword });
+        closeModal();
+        toast(`Temporary password set for ${pupil.displayName}. Tell the pupil the password shown to you; they must change it at next sign-in.`);
+        break;
+      }
       case "register": { const user=await registerWithInvite(data); await initialiseUser(user); toast("Account created. Check your email for a verification link if requested."); break; }
       case "independent-teacher": { const user=await registerIndependentTeacher(data); await initialiseUser(user); toast("Individual teacher workspace activated."); break; }
       case "school-activation": { data.assignTeacher = formData.has("assignTeacher"); const user=await registerSchoolWithActivation(data); await initialiseUser(user); toast("School workspace activated."); break; }
@@ -2314,6 +2364,11 @@ async function initialiseUser(user) {
     }
     state.profile=profile;
     state.area=null;
+    if (profile.mustChangePassword === true && isPupil(profile)) {
+      state.data=null;
+      renderForcedPasswordChange(profile);
+      return;
+    }
     state.data=await loadAppData(profile);
     attachFeedbackListener();
     state.route="overview";

@@ -9,6 +9,8 @@ let db = null;
 let initializeApp, getAuth, onAuthStateChanged, signInWithEmailAndPassword;
 let createUserWithEmailAndPassword, firebaseSignOut, sendPasswordResetEmail;
 let sendEmailVerification, GoogleAuthProvider, signInWithPopup, updateProfile, deleteUser;
+let getFunctions, httpsCallable;
+let functions = null;
 let verifyBeforeUpdateEmail, getFirestore, doc, getDoc, getDocs, setDoc;
 let addDoc, updateDoc, deleteDoc, collection, query, where, limit, onSnapshot;
 let serverTimestamp, writeBatch, arrayUnion, runTransaction;
@@ -16,8 +18,9 @@ let serverTimestamp, writeBatch, arrayUnion, runTransaction;
 const firebaseReady = isDemoMode ? Promise.resolve() : Promise.all([
   import("https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js"),
   import("https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js"),
-  import("https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js")
-]).then(([appMod, authMod, firestoreMod]) => {
+  import("https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js"),
+  import("https://www.gstatic.com/firebasejs/12.16.0/firebase-functions.js")
+]).then(([appMod, authMod, firestoreMod, functionsMod]) => {
   ({ initializeApp } = appMod);
   ({
     getAuth, onAuthStateChanged, signInWithEmailAndPassword,
@@ -29,10 +32,12 @@ const firebaseReady = isDemoMode ? Promise.resolve() : Promise.all([
     getFirestore, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc,
     collection, query, where, limit, onSnapshot, serverTimestamp, writeBatch, arrayUnion, runTransaction
   } = firestoreMod);
+  ({ getFunctions, httpsCallable } = functionsMod);
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   auth.useDeviceLanguage();
   db = getFirestore(app);
+  functions = getFunctions(app, "europe-west2");
 });
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -303,6 +308,26 @@ export async function sendPupilPasswordReset(email) {
   const address = String(email || "").trim();
   if (!address) throw new Error("This pupil does not have an email address recorded.");
   return resetPassword(address);
+}
+
+
+export async function setPupilTemporaryPassword({ schoolId, pupilId, temporaryPassword }) {
+  if (isDemoMode) return { ok: true };
+  await firebaseReady;
+  if (!schoolId || !pupilId) throw new Error("Choose a pupil from one of your classes.");
+  if (String(temporaryPassword || "").length < 8) throw new Error("Use a temporary password with at least 8 characters.");
+  const callable = httpsCallable(functions, "setPupilTemporaryPassword");
+  const result = await callable({ schoolId, pupilId, temporaryPassword });
+  return result.data || { ok: true };
+}
+
+export async function completeTemporaryPasswordChange(newPassword) {
+  if (isDemoMode) return { ok: true };
+  await firebaseReady;
+  if (String(newPassword || "").length < 8) throw new Error("Choose a new password with at least 8 characters.");
+  const callable = httpsCallable(functions, "completeTemporaryPasswordChange");
+  const result = await callable({ newPassword });
+  return result.data || { ok: true };
 }
 
 export async function signOut() {

@@ -903,7 +903,7 @@ function classSnapshotTable(cls) {
     const membership = pupilMembership(pupil.id, cls.subjectId) || {};
     const average = assessmentAverage(pupil.id, { classId: cls.id, subjectId: cls.subjectId });
     const risk = atRiskInfo(pupil.id, cls.id);
-    return `<tr><td><button class="table-link" data-action="open-pupil" data-id="${pupil.id}">${e(pupil.displayName)}</button><div class="small muted">${e(pupil.email)}</div></td><td>${average.count ? `${badge(average.grade)} ${formatPercent(average.percentage)}` : "—"}</td><td>${badge(membership.targetGrade || "Not set")}</td><td>${openFeedbackCount(pupil.id, cls.subjectId)}</td><td>${badge(risk.level)}${riskExplanationHtml(risk, { compact: true })}</td><td><div class="table-actions"><button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${pupil.id}">Dashboard</button><button class="btn btn-primary btn-sm" data-action="review-risk" data-id="${pupil.id}" data-class-id="${cls.id}">Review</button></div></td></tr>`;
+    return `<tr><td><button class="table-link" data-action="open-pupil" data-id="${pupil.id}">${e(pupil.displayName)}</button><div class="small muted">${e(pupil.email)}</div></td><td>${average.count ? `${badge(average.grade)} ${formatPercent(average.percentage)}` : "—"}</td><td>${badge(membership.targetGrade || "Not set")}</td><td>${openFeedbackCount(pupil.id, cls.subjectId)}</td><td>${badge(risk.level)}${riskExplanationHtml(risk, { compact: true })}</td><td><div class="table-actions"><button class="btn btn-ghost btn-sm" data-action="open-pupil" data-id="${pupil.id}">Dashboard</button>${pupil.authProvider === "google" ? `<span class="badge badge-blue">Google login</span>` : `<button class="btn btn-secondary btn-sm" data-action="reset-pupil-password" data-id="${pupil.id}" data-email="${e(pupil.email)}">Reset password</button>`}<button class="btn btn-primary btn-sm" data-action="review-risk" data-id="${pupil.id}" data-class-id="${cls.id}">Review</button></div></td></tr>`;
   }).join("") || `<tr><td colspan="6" class="empty">No pupils linked to this class.</td></tr>`}</tbody></table></div>`;
 }
 
@@ -1925,7 +1925,7 @@ app.addEventListener("click", async (event) => {
     const pupil = byId(state.data.users, id);
     if (!pupil) return toast("Pupil account not found.", "error");
     if (pupil.authProvider === "google") return toast("This pupil signs in through Google and does not have a FeedbackLoop password.", "error");
-    const ok = confirm(`Send a secure password-reset email to ${pupil.displayName} at ${pupil.email}?`);
+    const ok = confirm(`Reset ${pupil.displayName}'s password?\n\nA secure link will be emailed to ${pupil.email}. The pupil chooses the new password, and you will never see it.`);
     if (!ok) return;
     await withBusy(actionEl, async()=>{await sendPupilPasswordReset(pupil.email);toast("Password-reset email sent to the pupil.");}); return;
   }

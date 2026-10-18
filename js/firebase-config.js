@@ -17,7 +17,7 @@ export const appSettings = {
   publicAppUrl: window.location.origin + window.location.pathname,
   // One-time setup: paste the Cloud Run password-service URL here.
   // Leave blank until the browser-only password service has been deployed.
-  passwordAdminUrl: ""
+  passwordAdminUrl: "https://feedbacksteps-password-service-211193320459.europe-west2.run.app"
 };
 
 export const firebaseIsConfigured =

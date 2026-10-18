@@ -14,7 +14,10 @@ export const appSettings = {
   // The app starts in demo mode until a real Firebase config is pasted above.
   forceDemoMode: false,
   // After publishing, replace this with your GitHub Pages or custom-domain URL.
-  publicAppUrl: window.location.origin + window.location.pathname
+  publicAppUrl: window.location.origin + window.location.pathname,
+  // One-time setup: paste the Cloud Run password-service URL here.
+  // Leave blank until the browser-only password service has been deployed.
+  passwordAdminUrl: ""
 };
 
 export const firebaseIsConfigured =
